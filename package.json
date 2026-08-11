@@ -1,0 +1,32 @@
+{
+  "name": "project-call-center",
+  "version": "0.3.0",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "workspaces": [
+    "apps/api",
+    "apps/web"
+  ],
+  "scripts": {
+    "dev:api": "npm run start:dev --workspace @call-center/api",
+    "dev:web": "npm run dev --workspace @call-center/admin-web",
+    "build": "npm run build --workspace @call-center/api && npm run build --workspace @call-center/admin-web",
+    "test": "npm run test --workspace @call-center/api && npm run test --workspace @call-center/admin-web",
+    "lint": "npm run lint --workspace @call-center/api",
+    "db:generate": "npm run prisma:generate --workspace @call-center/api",
+    "db:migrate": "npm run prisma:migrate --workspace @call-center/api",
+    "db:seed": "npm run prisma:seed --workspace @call-center/api"
+  },
+  "overrides": {
+    "@nestjs/swagger": {
+      "js-yaml": "5.2.3"
+    },
+    "uuid": "11.1.1"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "js-yaml": "5.2.3"
+  }
+}

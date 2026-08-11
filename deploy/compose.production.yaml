@@ -1,0 +1,133 @@
+name: project-call-center
+
+x-api-environment: &api-environment
+  NODE_ENV: production
+  API_PORT: "8800"
+  TZ: Asia/Shanghai
+  DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in deploy/.env.production}
+  JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in deploy/.env.production}
+  JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
+  JWT_REFRESH_DAYS: ${JWT_REFRESH_DAYS:-30}
+  PHONE_ENCRYPTION_KEY: ${PHONE_ENCRYPTION_KEY:?set PHONE_ENCRYPTION_KEY in deploy/.env.production}
+  PHONE_HASH_KEY: ${PHONE_HASH_KEY:?set PHONE_HASH_KEY in deploy/.env.production}
+  WEB_ORIGIN: ${WEB_ORIGIN:?set WEB_ORIGIN in deploy/.env.production}
+
+x-api-service: &api-service
+  image: ${API_IMAGE:-project-call-center-api:0.3.0}
+  build:
+    context: ..
+    dockerfile: apps/api/Dockerfile
+  environment: *api-environment
+  networks:
+    - call-center
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-call_center}
+      POSTGRES_USER: ${POSTGRES_USER:-call_center}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env.production}
+      TZ: Asia/Shanghai
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - call-center
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    security_opt:
+      - no-new-privileges:true
+
+  migrate:
+    <<: *api-service
+    command:
+      - node
+      - node_modules/prisma/build/index.js
+      - migrate
+      - deploy
+      - --schema
+      - apps/api/prisma/schema.prisma
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  bootstrap-admin:
+    <<: *api-service
+    command: ["node", "apps/api/dist/prisma/bootstrap-admin.js"]
+    environment:
+      <<: *api-environment
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME:-系统管理员}
+      ADMIN_INITIAL_PASSWORD: ${ADMIN_INITIAL_PASSWORD:-}
+    restart: "no"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  api:
+    <<: *api-service
+    ports:
+      - "127.0.0.1:${API_LOOPBACK_PORT:-18800}:8800"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:8800/api/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+  worker:
+    <<: *api-service
+    command: ["node", "apps/api/dist/src/worker.js"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  web:
+    image: ${WEB_IMAGE:-project-call-center-web:0.3.0}
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+      args:
+        VITE_API_BASE_URL: /api/v1
+    ports:
+      - "127.0.0.1:${WEB_LOOPBACK_PORT:-18801}:8080"
+    networks:
+      - call-center
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+      - /var/cache/nginx:size=16m,mode=0755
+      - /var/run:size=4m,mode=0755
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz | grep -q ok"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+networks:
+  call-center:
+    name: project-call-center-network
+
+volumes:
+  postgres-data:
+    name: project-call-center-postgres-production

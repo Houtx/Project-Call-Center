@@ -1,0 +1,475 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  AGENT
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum BatchStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum CustomerStatus {
+  AVAILABLE
+  ASSIGNED
+  COMPLETED
+  ARCHIVED
+  SUPPRESSED
+}
+
+enum AssignmentStatus {
+  ACTIVE
+  COMPLETED
+  RECLAIMED
+  REASSIGNED
+  SUPPRESSED
+}
+
+enum DeviceStatus {
+  ACTIVE
+  REVOKED
+  PENDING
+}
+
+enum PermissionState {
+  UNKNOWN
+  GRANTED
+  DENIED
+}
+
+enum AttemptStatus {
+  PENDING
+  COLLECTING
+  CONNECTED
+  NOT_CONNECTED
+  UNKNOWN
+}
+
+enum CallResultSource {
+  CALL_LOG
+  TIMEOUT
+}
+
+enum SuppressionSource {
+  MANUAL
+  IMPORT
+  COMPLIANCE
+}
+
+enum ImportMode {
+  SKIP_DUPLICATES
+  UPDATE_EXISTING
+}
+
+enum ImportJobStatus {
+  UPLOADED
+  PREVIEWED
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum ImportRowStatus {
+  NEW
+  UPDATE
+  DUPLICATE
+  INVALID
+  SUPPRESSED
+  IMPORTED
+  FAILED
+}
+
+enum SyncEntityType {
+  ASSIGNMENT
+  CUSTOMER
+  CALL_ATTEMPT
+  DEVICE
+}
+
+enum SyncOperation {
+  UPSERT
+  REMOVE
+}
+
+enum IdempotencyStatus {
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model User {
+  id                  String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  username            String              @unique @db.VarChar(80)
+  displayName         String              @db.VarChar(120)
+  passwordHash        String              @db.VarChar(255)
+  role                Role
+  status              UserStatus          @default(ACTIVE)
+  tokenVersion        Int                 @default(0)
+  lastLoginAt         DateTime?           @db.Timestamptz(3)
+  createdAt           DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime            @updatedAt @db.Timestamptz(3)
+  refreshTokens       RefreshToken[]
+  createdBatches      Batch[]             @relation("BatchCreatedBy")
+  createdCustomers    Customer[]          @relation("CustomerCreatedBy")
+  assignments         Assignment[]        @relation("AssignedAgent")
+  assignedCustomers   Assignment[]        @relation("AssignmentAssignedBy")
+  endedAssignments    Assignment[]        @relation("AssignmentEndedBy")
+  devices             Device[]
+  callAttempts        CallAttempt[]
+  suppressions        SuppressionEntry[]  @relation("SuppressionCreatedBy")
+  revokedSuppressions SuppressionEntry[]  @relation("SuppressionRevokedBy")
+  importJobs          ImportJob[]
+  auditEvents         AuditEvent[]
+  syncChanges         SyncChange[]        @relation("SyncTargetUser")
+  idempotencyRecords  IdempotencyRecord[]
+
+  @@index([role, status])
+  @@map("users")
+}
+
+model RefreshToken {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId     String    @db.Uuid
+  deviceId   String?   @db.Uuid
+  tokenHash  String    @unique @db.VarChar(64)
+  expiresAt  DateTime  @db.Timestamptz(3)
+  revokedAt  DateTime? @db.Timestamptz(3)
+  lastUsedAt DateTime? @db.Timestamptz(3)
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3)
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@map("refresh_tokens")
+}
+
+model Batch {
+  id          String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code        String      @unique @db.VarChar(64)
+  name        String      @db.VarChar(160)
+  description String?     @db.Text
+  status      BatchStatus @default(ACTIVE)
+  createdById String?     @db.Uuid
+  archivedAt  DateTime?   @db.Timestamptz(3)
+  createdAt   DateTime    @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime    @updatedAt @db.Timestamptz(3)
+  createdBy   User?       @relation("BatchCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  customers   Customer[]
+  importJobs  ImportJob[]
+
+  @@index([status, createdAt])
+  @@map("batches")
+}
+
+model Customer {
+  id              String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  batchId         String?        @db.Uuid
+  createdById     String?        @db.Uuid
+  name            String?        @db.VarChar(160)
+  phoneCiphertext Bytes          @db.ByteA
+  phoneIv         Bytes          @db.ByteA
+  phoneTag        Bytes          @db.ByteA
+  phoneHash       String         @unique @db.VarChar(64)
+  phoneMasked     String         @db.VarChar(32)
+  province        String?        @db.VarChar(80)
+  city            String?        @db.VarChar(80)
+  carrier         String?        @db.VarChar(80)
+  notes           String?        @db.Text
+  tags            String[]       @default([])
+  status          CustomerStatus @default(AVAILABLE)
+  version         Int            @default(1)
+  lastContactAt   DateTime?      @db.Timestamptz(3)
+  archivedAt      DateTime?      @db.Timestamptz(3)
+  erasedAt        DateTime?      @db.Timestamptz(3)
+  createdAt       DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime       @updatedAt @db.Timestamptz(3)
+  batch           Batch?         @relation(fields: [batchId], references: [id], onDelete: SetNull)
+  createdBy       User?          @relation("CustomerCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  assignments     Assignment[]
+  callAttempts    CallAttempt[]
+
+  @@index([batchId, status, createdAt])
+  @@index([status, updatedAt])
+  @@map("customers")
+}
+
+model Assignment {
+  id           String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  customerId   String           @db.Uuid
+  agentId      String           @db.Uuid
+  assignedById String?          @db.Uuid
+  endedById    String?          @db.Uuid
+  status       AssignmentStatus @default(ACTIVE)
+  assignedAt   DateTime         @default(now()) @db.Timestamptz(3)
+  endedAt      DateTime?        @db.Timestamptz(3)
+  endReason    String?          @db.VarChar(255)
+  createdAt    DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime         @updatedAt @db.Timestamptz(3)
+  customer     Customer         @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  agent        User             @relation("AssignedAgent", fields: [agentId], references: [id], onDelete: Restrict)
+  assignedBy   User?            @relation("AssignmentAssignedBy", fields: [assignedById], references: [id], onDelete: SetNull)
+  endedBy      User?            @relation("AssignmentEndedBy", fields: [endedById], references: [id], onDelete: SetNull)
+  callAttempts CallAttempt[]
+
+  @@index([customerId, status])
+  @@index([agentId, status, assignedAt])
+  @@map("assignments")
+}
+
+model AllowedDeviceModel {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  manufacturer String   @db.VarChar(100)
+  model        String   @db.VarChar(120)
+  androidSdk   Int
+  enabled      Boolean  @default(true)
+  notes        String?  @db.Text
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @db.Timestamptz(3)
+  devices      Device[]
+
+  @@unique([manufacturer, model, androidSdk])
+  @@index([enabled])
+  @@map("allowed_device_models")
+}
+
+model Device {
+  id                   String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId               String              @db.Uuid
+  allowedDeviceModelId String?             @db.Uuid
+  installId            String              @unique @db.VarChar(128)
+  displayName          String?             @db.VarChar(160)
+  manufacturer         String              @db.VarChar(100)
+  model                String              @db.VarChar(120)
+  androidVersion       String              @db.VarChar(40)
+  androidSdk           Int
+  appVersion           String              @db.VarChar(40)
+  appVersionCode       Int
+  status               DeviceStatus        @default(PENDING)
+  callPhonePermission  PermissionState     @default(UNKNOWN)
+  callLogPermission    PermissionState     @default(UNKNOWN)
+  lastHealthAt         DateTime?           @db.Timestamptz(3)
+  lastSyncCursor       BigInt              @default(0)
+  lastSyncAt           DateTime?           @db.Timestamptz(3)
+  activatedAt          DateTime?           @db.Timestamptz(3)
+  revokedAt            DateTime?           @db.Timestamptz(3)
+  createdAt            DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt            DateTime            @updatedAt @db.Timestamptz(3)
+  user                 User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  allowedDeviceModel   AllowedDeviceModel? @relation(fields: [allowedDeviceModelId], references: [id], onDelete: SetNull)
+  callAttempts         CallAttempt[]
+
+  @@index([userId, status])
+  @@index([status, lastHealthAt])
+  @@map("devices")
+}
+
+model CallAttempt {
+  id                   String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  assignmentId         String        @db.Uuid
+  customerId           String        @db.Uuid
+  agentId              String        @db.Uuid
+  deviceId             String        @db.Uuid
+  clientAttemptId      String        @unique @db.VarChar(128)
+  attemptNumber        Int
+  status               AttemptStatus @default(PENDING)
+  dialTokenHash        String?       @unique @db.VarChar(64)
+  dialTokenExpiresAt   DateTime?     @db.Timestamptz(3)
+  callLogBaselineId    String?       @db.VarChar(128)
+  callLogBaselineAt    DateTime?     @db.Timestamptz(3)
+  initiatedAt          DateTime      @default(now()) @db.Timestamptz(3)
+  dialedAt             DateTime?     @db.Timestamptz(3)
+  collectingDeadlineAt DateTime?     @db.Timestamptz(3)
+  completedAt          DateTime?     @db.Timestamptz(3)
+  createdAt            DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt            DateTime      @updatedAt @db.Timestamptz(3)
+  assignment           Assignment    @relation(fields: [assignmentId], references: [id], onDelete: Restrict)
+  customer             Customer      @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  agent                User          @relation(fields: [agentId], references: [id], onDelete: Restrict)
+  device               Device        @relation(fields: [deviceId], references: [id], onDelete: Restrict)
+  result               CallResult?
+
+  @@unique([assignmentId, attemptNumber])
+  @@index([agentId, initiatedAt])
+  @@index([customerId, initiatedAt])
+  @@index([status, collectingDeadlineAt])
+  @@map("call_attempts")
+}
+
+model CallResult {
+  id                  String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  attemptId           String           @unique @db.Uuid
+  deviceId            String           @db.Uuid
+  eventId             String?          @unique @db.VarChar(200)
+  source              CallResultSource
+  durationSeconds     Int?
+  systemCallLogId     String?          @db.VarChar(128)
+  systemCallStartedAt DateTime?        @db.Timestamptz(3)
+  systemCallEndedAt   DateTime?        @db.Timestamptz(3)
+  matchedAt           DateTime?        @db.Timestamptz(3)
+  clientObservedAt    DateTime?        @db.Timestamptz(3)
+  receivedAt          DateTime         @default(now()) @db.Timestamptz(3)
+  createdAt           DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime         @updatedAt @db.Timestamptz(3)
+  attempt             CallAttempt      @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+
+  @@index([systemCallStartedAt])
+  @@unique([deviceId, systemCallLogId, systemCallStartedAt])
+  @@map("call_results")
+}
+
+model SuppressionEntry {
+  id              String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  phoneCiphertext Bytes             @db.ByteA
+  phoneIv         Bytes             @db.ByteA
+  phoneTag        Bytes             @db.ByteA
+  phoneHash       String            @db.VarChar(64)
+  phoneMasked     String            @db.VarChar(32)
+  reason          String?           @db.VarChar(255)
+  source          SuppressionSource @default(MANUAL)
+  createdById     String?           @db.Uuid
+  revokedById     String?           @db.Uuid
+  revokedAt       DateTime?         @db.Timestamptz(3)
+  createdAt       DateTime          @default(now()) @db.Timestamptz(3)
+  createdBy       User?             @relation("SuppressionCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  revokedBy       User?             @relation("SuppressionRevokedBy", fields: [revokedById], references: [id], onDelete: SetNull)
+
+  @@index([phoneHash, revokedAt])
+  @@index([createdAt])
+  @@map("suppression_entries")
+}
+
+model ImportJob {
+  id             String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  batchId        String?         @db.Uuid
+  createdById    String          @db.Uuid
+  fileName       String          @db.VarChar(255)
+  objectKey      String?         @db.VarChar(512)
+  mode           ImportMode      @default(SKIP_DUPLICATES)
+  status         ImportJobStatus @default(UPLOADED)
+  totalRows      Int             @default(0)
+  newRows        Int             @default(0)
+  updateRows     Int             @default(0)
+  duplicateRows  Int             @default(0)
+  invalidRows    Int             @default(0)
+  suppressedRows Int             @default(0)
+  importedRows   Int             @default(0)
+  failedRows     Int             @default(0)
+  failureMessage String?         @db.Text
+  startedAt      DateTime?       @db.Timestamptz(3)
+  completedAt    DateTime?       @db.Timestamptz(3)
+  createdAt      DateTime        @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime        @updatedAt @db.Timestamptz(3)
+  batch          Batch?          @relation(fields: [batchId], references: [id], onDelete: SetNull)
+  createdBy      User            @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  rows           ImportRow[]
+
+  @@index([status, createdAt])
+  @@index([createdById, createdAt])
+  @@map("import_jobs")
+}
+
+model ImportRow {
+  id                String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  importJobId       String          @db.Uuid
+  rowNumber         Int
+  status            ImportRowStatus
+  phoneCiphertext   Bytes?          @db.ByteA
+  phoneIv           Bytes?          @db.ByteA
+  phoneTag          Bytes?          @db.ByteA
+  phoneHash         String?         @db.VarChar(64)
+  phoneMasked       String?         @db.VarChar(32)
+  name              String?         @db.VarChar(160)
+  batchName         String?         @db.VarChar(160)
+  province          String?         @db.VarChar(80)
+  city              String?         @db.VarChar(80)
+  carrier           String?         @db.VarChar(80)
+  notes             String?         @db.Text
+  tags              String[]        @default([])
+  issues            Json            @default("[]")
+  createdCustomerId String?         @db.Uuid
+  createdAt         DateTime        @default(now()) @db.Timestamptz(3)
+  importJob         ImportJob       @relation(fields: [importJobId], references: [id], onDelete: Cascade)
+
+  @@unique([importJobId, rowNumber])
+  @@index([importJobId, status])
+  @@map("import_rows")
+}
+
+model AuditEvent {
+  id         BigInt   @id @default(autoincrement())
+  actorId    String?  @db.Uuid
+  deviceId   String?  @db.Uuid
+  action     String   @db.VarChar(120)
+  entityType String   @db.VarChar(120)
+  entityId   String?  @db.VarChar(128)
+  requestId  String?  @db.VarChar(128)
+  metadata   Json     @default("{}")
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId, createdAt])
+  @@index([actorId, createdAt])
+  @@index([requestId])
+  @@map("audit_events")
+}
+
+model SyncChange {
+  cursor       BigInt         @id @default(autoincrement())
+  targetUserId String?        @db.Uuid
+  entityType   SyncEntityType
+  entityId     String         @db.Uuid
+  operation    SyncOperation
+  payload      Json           @default("{}")
+  createdAt    DateTime       @default(now()) @db.Timestamptz(3)
+  targetUser   User?          @relation("SyncTargetUser", fields: [targetUserId], references: [id], onDelete: Cascade)
+
+  @@index([targetUserId, cursor])
+  @@index([createdAt])
+  @@map("sync_changes")
+}
+
+model IdempotencyRecord {
+  id           String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  actorId      String?           @db.Uuid
+  scope        String            @db.VarChar(120)
+  key          String            @db.VarChar(200)
+  requestHash  String            @db.VarChar(64)
+  status       IdempotencyStatus @default(PROCESSING)
+  responseCode Int?
+  responseBody Json?
+  expiresAt    DateTime          @db.Timestamptz(3)
+  createdAt    DateTime          @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime          @updatedAt @db.Timestamptz(3)
+  actor        User?             @relation(fields: [actorId], references: [id], onDelete: Cascade)
+
+  @@unique([actorId, scope, key])
+  @@index([actorId, createdAt])
+  @@index([expiresAt])
+  @@map("idempotency_records")
+}
+
+model MobileAppPolicy {
+  id                        String   @id @default("android") @db.VarChar(32)
+  minimumVersionCode        Int      @default(1)
+  latestVersionCode         Int      @default(1)
+  forceUpgrade              Boolean  @default(false)
+  deviceCompatibilityRequired Boolean @default(true)
+  maxCallAttempts           Int      @default(2)
+  downloadUrl               String?  @db.VarChar(512)
+  updatedAt                 DateTime @updatedAt @db.Timestamptz(3)
+
+  @@map("mobile_app_policies")
+}

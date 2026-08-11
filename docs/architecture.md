@@ -1,0 +1,54 @@
+# Architecture
+
+Project Call Center is a single-company SIM calling CRM with two user surfaces:
+
+- Administrators use the React web application to maintain customers, allocate work, manage agents and inspect call statistics.
+- Agents use the Android application to synchronize assigned customers and explicitly start calls through the system dialer.
+
+## Trust boundaries
+
+The API is the source of truth for customer ownership, suppression, retry limits and report definitions. The Android app never receives a reusable offline dialing list: it requests a short-lived dial authorization immediately before every call.
+
+The Android system CallLog is an operational observation, not carrier-grade evidence. Only CallLog rows matched to an API-created call attempt may be uploaded. Personal calls and contacts are outside the data boundary.
+
+## Runtime components
+
+| Component | Responsibility |
+| --- | --- |
+| Admin web | Customer, batch, allocation, agent, device, suppression, call and audit workflows |
+| API | Authentication, authorization, business invariants, encrypted phone storage and reporting |
+| Worker | Call timeout reconciliation and asynchronous maintenance jobs |
+| PostgreSQL | Transactional source of truth and audit history |
+| Android app | Foreground synchronization, dial handoff, local outbox and CallLog matching |
+| S3-compatible storage | Client-side encrypted off-host database backups in production |
+
+All timestamps are stored as UTC and rendered in `Asia/Shanghai`. Phone numbers are normalized to E.164, encrypted with AES-256-GCM and indexed only by keyed HMAC. Full-number access is always an audited operation.
+
+Customer creation and imports use the bundled offline `phone2region` prefix database to fill missing province, city and carrier values before encryption and preview. Explicit administrator input takes precedence, lookup failures do not block valid numbers, and carrier attribution is operational metadata only because number portability and newly allocated ranges can make prefix data stale.
+
+Compliance erasure is allowed only after a customer is archived and active assignments are withdrawn. It replaces personal fields and the encrypted phone identity while retaining anonymized assignment/call aggregates and an audit event containing the stated deletion reason.
+
+## Android startup boundaries
+
+The release APK does not embed a business server. A user configures an HTTPS domain on the login screen; the app normalizes it to `/api/v1/`, verifies the health endpoint and stores only the validated endpoint. A change to a different server clears the old authentication, device binding and local business cache. Pending CallLog observations block a server change so that an attempt cannot silently move between server identities.
+
+Before any business screen or background collection runs, the app checks the public GitHub Release manifest. A newer `versionCode` keeps the app locked until the APK has been downloaded, checked for size, SHA-256, package name, version and signing certificate, and installed through the Android system installer. Android does not allow this application to install updates silently.
+
+The server has a second compatibility boundary: exact manufacturer/model/API allowlisting and `minimumVersionCode`. Administrators can disable the allowlist check with `deviceCompatibilityRequired` when a controlled rollout needs to accept any Android 12+ device; app version, active-device, online and call-permission checks remain enforced. When `forceUpgrade` is enabled, clients below `latestVersionCode` are rejected while the latest version remains usable.
+
+An agent login includes the app installation ID and device metadata. The API serializes logins for that agent, revokes all previous refresh tokens and active devices, increments the JWT session version, then makes the current phone the only active device. Old access tokens fail on their next request, and the foreground app checks its session at least every 15 seconds. Administrators may still revoke the current device manually. A phone with an uncollected CallLog observation should finish uploading before another phone replaces its session.
+
+## Call state model
+
+1. `POST /api/v1/mobile/call-attempts` validates the active assignment, device health, suppression list, retry count and retry interval.
+2. The API creates a durable attempt before returning the short-lived dial number.
+3. Android records a CallLog baseline and launches the system dialer.
+4. Android matches only a newer outgoing row for the same normalized phone number and uploads the observation idempotently.
+5. A duration above zero becomes `CONNECTED`; zero becomes `NOT_CONNECTED`; no observation after 24 hours becomes `UNKNOWN`.
+6. `CONNECTED` or reaching the administrator-configured attempt limit closes the assignment. The limit defaults to two and may be set from 1-10. A zero-duration result retains the task for another call after 30 minutes and moves it behind all uncalled tasks in the Android queue.
+
+Unknown calls remain visible in the attempt count and data-completeness metric but are excluded from the connection-rate denominator.
+
+Original plaintext import files are parsed in memory and are not retained. Import row metadata and phone values are stored in PostgreSQL using the same encryption and masking boundary as customer data. CSV exports are generated on demand, require administrator authentication and create an audit event.
+
+The current import implementation is synchronous and materializes up to 100,000 rows in API memory. It is a documented production capacity constraint, not an asynchronous Worker job. See `KNOWN_ISSUES.md` before sizing a host.

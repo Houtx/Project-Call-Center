@@ -1,0 +1,24 @@
+name: project-call-center
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: call_center
+      POSTGRES_USER: call_center
+      POSTGRES_PASSWORD: call_center_dev
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:54329:5432"
+    volumes:
+      - call-center-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U call_center -d call_center"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  call-center-postgres:
+    name: project-call-center-postgres
