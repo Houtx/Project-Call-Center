@@ -258,6 +258,12 @@ scripts/        端到端与容量测试脚本
 
 请勿向公开 Issue、截图、测试库或示例文件上传真实客户号码、员工信息、服务器地址、密钥和业务数据。公开发布前请执行 [开源检查清单](OPEN_SOURCE_CHECKLIST.md)。
 
+## 搜索关键词
+
+中文关键词：外呼系统、电话外呼、手机外呼、SIM 卡外呼、安卓外呼 APP、呼叫中心、外呼 CRM、电话销售系统、客户资料管理、客户批次管理、客户分配、坐席外呼、通话记录、通话统计、接通率、双卡拨号、自动通话对账、自部署呼叫中心。
+
+English keywords: outbound calling system, phone dialer, SIM outbound dialer, Android dialer, call center CRM, contact center, telephony CRM, customer assignment, lead distribution, call logs, call analytics, connection rate, dual SIM calling, self-hosted CRM.
+
 ## 更多文档
 
 | 文档 | 内容 |
