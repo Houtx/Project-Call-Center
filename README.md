@@ -260,7 +260,7 @@ scripts/        端到端与容量测试脚本
 
 ## 搜索关键词
 
-中文关键词：外呼系统、电话外呼、手机外呼、SIM 卡外呼、安卓外呼 APP、呼叫中心、外呼 CRM、电话销售系统、客户资料管理、客户批次管理、客户分配、坐席外呼、通话记录、通话统计、接通率、双卡拨号、自动通话对账、自部署呼叫中心。
+中文关键词：外呼系统、开源外呼系统、企业外呼系统、电话外呼、手机外呼、安卓电话外呼、SIM 卡外呼、SIM 卡拨号、双卡拨号、双卡双待外呼、呼叫中心系统、客服外呼、销售外呼、外呼 CRM、电话销售系统、客户管理系统、客户资料管理、客户批次管理、外呼任务分配、坐席外呼、坐席管理、通话记录、通话记录管理、通话数据统计、外呼统计报表、接通率、通话时长统计、未接通重试、自部署呼叫中心、自建外呼平台、局域网部署、安卓外呼 APP。
 
 English keywords: outbound calling system, phone dialer, SIM outbound dialer, Android dialer, call center CRM, contact center, telephony CRM, customer assignment, lead distribution, call logs, call analytics, connection rate, dual SIM calling, self-hosted CRM.
 
