@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">坐席外呼</string>
+    <string name="recording_channel_name">通话录音</string>
+    <string name="recording_notification_title">正在记录本次外呼</string>
 </resources>

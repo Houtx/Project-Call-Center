@@ -111,6 +111,15 @@ enum IdempotencyStatus {
   FAILED
 }
 
+enum CallRecordingStatus {
+  PENDING
+  UPLOADING
+  READY
+  FAILED
+  UNSUPPORTED
+  DELETED
+}
+
 model User {
   id                  String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   username            String              @unique @db.VarChar(80)
@@ -118,6 +127,7 @@ model User {
   passwordHash        String              @db.VarChar(255)
   role                Role
   status              UserStatus          @default(ACTIVE)
+  recordingEnabled    Boolean             @default(false)
   tokenVersion        Int                 @default(0)
   lastLoginAt         DateTime?           @db.Timestamptz(3)
   createdAt           DateTime            @default(now()) @db.Timestamptz(3)
@@ -136,6 +146,7 @@ model User {
   auditEvents         AuditEvent[]
   syncChanges         SyncChange[]        @relation("SyncTargetUser")
   idempotencyRecords  IdempotencyRecord[]
+  recordings          CallRecording[]
 
   @@index([role, status])
   @@map("users")
@@ -261,6 +272,7 @@ model Device {
   status               DeviceStatus        @default(PENDING)
   callPhonePermission  PermissionState     @default(UNKNOWN)
   callLogPermission    PermissionState     @default(UNKNOWN)
+  recordAudioPermission PermissionState    @default(UNKNOWN)
   lastHealthAt         DateTime?           @db.Timestamptz(3)
   lastSyncCursor       BigInt              @default(0)
   lastSyncAt           DateTime?           @db.Timestamptz(3)
@@ -271,6 +283,7 @@ model Device {
   user                 User                @relation(fields: [userId], references: [id], onDelete: Cascade)
   allowedDeviceModel   AllowedDeviceModel? @relation(fields: [allowedDeviceModelId], references: [id], onDelete: SetNull)
   callAttempts         CallAttempt[]
+  recordings           CallRecording[]
 
   @@index([userId, status])
   @@index([status, lastHealthAt])
@@ -286,6 +299,7 @@ model CallAttempt {
   clientAttemptId      String        @unique @db.VarChar(128)
   attemptNumber        Int
   status               AttemptStatus @default(PENDING)
+  recordingRequested   Boolean       @default(false)
   dialTokenHash        String?       @unique @db.VarChar(64)
   dialTokenExpiresAt   DateTime?     @db.Timestamptz(3)
   callLogBaselineId    String?       @db.VarChar(128)
@@ -301,12 +315,38 @@ model CallAttempt {
   agent                User          @relation(fields: [agentId], references: [id], onDelete: Restrict)
   device               Device        @relation(fields: [deviceId], references: [id], onDelete: Restrict)
   result               CallResult?
+  recording            CallRecording?
 
   @@unique([assignmentId, attemptNumber])
   @@index([agentId, initiatedAt])
   @@index([customerId, initiatedAt])
   @@index([status, collectingDeadlineAt])
   @@map("call_attempts")
+}
+
+model CallRecording {
+  id              String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  attemptId       String              @unique @db.Uuid
+  agentId         String              @db.Uuid
+  deviceId        String              @db.Uuid
+  status          CallRecordingStatus @default(PENDING)
+  objectKey       String?             @db.VarChar(512)
+  mimeType        String?             @db.VarChar(120)
+  sizeBytes       Int?
+  durationSeconds Int?
+  sha256          String?             @db.VarChar(64)
+  failureCode     String?             @db.VarChar(120)
+  createdAt       DateTime            @default(now()) @db.Timestamptz(3)
+  uploadedAt      DateTime?           @db.Timestamptz(3)
+  deletedAt       DateTime?            @db.Timestamptz(3)
+  expiresAt       DateTime?            @db.Timestamptz(3)
+  attempt         CallAttempt         @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  agent           User                @relation(fields: [agentId], references: [id], onDelete: Restrict)
+  device          Device              @relation(fields: [deviceId], references: [id], onDelete: Restrict)
+
+  @@index([status, expiresAt])
+  @@index([agentId, createdAt])
+  @@map("call_recordings")
 }
 
 model CallResult {
@@ -469,6 +509,7 @@ model MobileAppPolicy {
   forceUpgrade              Boolean  @default(false)
   deviceCompatibilityRequired Boolean @default(true)
   maxCallAttempts           Int      @default(2)
+  recordingRetentionDays    Int      @default(30)
   downloadUrl               String?  @db.VarChar(512)
   updatedAt                 DateTime @updatedAt @db.Timestamptz(3)
 

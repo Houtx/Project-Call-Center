@@ -27,7 +27,7 @@ describe('CallReconciliationService', () => {
       $transaction: jest.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     };
     const audit = { record: jest.fn() };
-    const service = new CallReconciliationService(prisma as any, audit as any);
+    const service = new CallReconciliationService(prisma as any, audit as any, { cleanupExpired: jest.fn() } as any);
 
     await expect(service.reconcileExpired()).resolves.toBe(1);
     expect(tx.callAttempt.updateMany).toHaveBeenCalledWith(expect.objectContaining({

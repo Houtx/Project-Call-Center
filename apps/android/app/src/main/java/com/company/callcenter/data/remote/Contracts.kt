@@ -78,7 +78,15 @@ data class CallAttemptResponse(
     val expiresAt: String,
     val collectionDeadlineAt: String,
     val attemptNumber: Int,
+    val recordingRequested: Boolean = false,
 )
+
+data class RecordingUploadResponse(
+    val id: String,
+    val status: String,
+    val sizeBytes: Int? = null,
+)
+data class RecordingUnsupportedResponse(val marked: Boolean)
 data class CancelCallAttemptResponse(val cancelled: Boolean)
 
 data class CallObservationBatch(val results: List<CallObservation>)
@@ -98,4 +106,5 @@ data class HeartbeatRequest(
     val appVersionCode: Int,
     val callPhonePermission: String,
     val callLogPermission: String,
+    val recordAudioPermission: String,
 )

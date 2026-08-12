@@ -164,6 +164,7 @@ interface WireAgent {
   pendingCount?: number;
   todayAttempts?: number;
   todayConnected?: number;
+  recordingEnabled?: boolean;
   createdAt: string;
   _count?: { assignments?: number; devices?: number };
 }
@@ -179,6 +180,7 @@ interface WireDevice {
   status: 'ACTIVE' | 'REVOKED' | 'PENDING';
   callPhonePermission: 'UNKNOWN' | 'GRANTED' | 'DENIED';
   callLogPermission: 'UNKNOWN' | 'GRANTED' | 'DENIED';
+  recordAudioPermission: 'UNKNOWN' | 'GRANTED' | 'DENIED';
   lastHealthAt?: string | null;
   activatedAt?: string | null;
   createdAt: string;
@@ -203,6 +205,7 @@ const mapAgent = (agent: WireAgent): Agent => ({
   pendingCount: agent.pendingCount ?? agent._count?.assignments ?? 0,
   todayAttempts: agent.todayAttempts,
   todayConnected: agent.todayConnected,
+  recordingEnabled: agent.recordingEnabled,
   createdAt: agent.createdAt,
 });
 
@@ -223,6 +226,7 @@ const mapDevice = (device: WireDevice): Device => {
     health: !active ? 'BLOCKED' : !recentlyOnline ? 'OFFLINE' : !permissionsHealthy || (compatibilityRequired && device.allowedDeviceModel?.enabled !== true) ? 'WARNING' : 'HEALTHY',
     permissionCallPhone: device.callPhonePermission === 'GRANTED',
     permissionReadCallLog: device.callLogPermission === 'GRANTED',
+    permissionRecordAudio: device.recordAudioPermission === 'GRANTED',
     lastSeenAt: device.lastHealthAt,
     activatedAt: device.activatedAt ?? device.createdAt,
   };
@@ -287,6 +291,7 @@ export const api = {
     },
     create: async (input: { username: string; displayName: string; password: string }) => mapAgent(await request<WireAgent>('/agents', { method: 'POST', body: input, idempotencyKey: idempotencyKey() })),
     setEnabled: async (id: string, enabled: boolean) => mapAgent(await request<WireAgent>(`/agents/${id}`, { method: 'PATCH', body: { active: enabled }, idempotencyKey: idempotencyKey() })),
+    update: async (id: string, input: { displayName?: string; active?: boolean; recordingEnabled?: boolean }) => mapAgent(await request<WireAgent>(`/agents/${id}`, { method: 'PATCH', body: input, idempotencyKey: idempotencyKey() })),
     resetPassword: (agentId: string, password: string) => request<void>(`/agents/${agentId}/reset-password`, { method: 'POST', body: { password }, idempotencyKey: idempotencyKey() }),
     revokeDevice: (deviceId: string) => request<void>(`/devices/${deviceId}/revoke`, { method: 'POST', idempotencyKey: idempotencyKey() }),
     devices: async () => (await request<WireDevice[]>('/devices')).map(mapDevice),
@@ -296,12 +301,14 @@ export const api = {
     updateDeviceModel: (id: string, input: { enabled?: boolean; notes?: string }) =>
       request<AllowedDeviceModel>(`/device-models/${id}`, { method: 'PATCH', body: input, idempotencyKey: idempotencyKey() }),
     mobilePolicy: () => request<MobileAppPolicy>('/mobile-app-policy'),
-    updateMobilePolicy: (input: Pick<MobileAppPolicy, 'minimumVersionCode' | 'latestVersionCode' | 'forceUpgrade' | 'deviceCompatibilityRequired' | 'maxCallAttempts'> & { downloadUrl?: string }) =>
+    updateMobilePolicy: (input: Pick<MobileAppPolicy, 'minimumVersionCode' | 'latestVersionCode' | 'forceUpgrade' | 'deviceCompatibilityRequired' | 'maxCallAttempts' | 'recordingRetentionDays'> & { downloadUrl?: string }) =>
       request<MobileAppPolicy>('/mobile-app-policy', { method: 'PATCH', body: input, idempotencyKey: idempotencyKey() }),
   },
   calls: {
     list: (query: ListOptions) => list<CallRecord>('/calls', query as Record<string, unknown>),
     revealPhone: (id: string) => request<{ phone: string; expiresAt: string }>(`/calls/${id}/phone`, { method: 'POST' }),
+    recordingUrl: (id: string) => `${API_BASE_URL}/calls/${id}/recording`,
+    recordingDownloadUrl: (id: string) => `${API_BASE_URL}/calls/${id}/recording/download`,
     summary: (query: ListOptions) => request<ReportSummary>('/reports/summary', { query: query as Record<string, unknown> }),
     exportUrl: (query: ListOptions) => `${API_BASE_URL}/calls/export${makeQuery(query as Record<string, unknown>)}`,
   },
@@ -331,4 +338,10 @@ export const downloadAuthenticated = async (url: string, fileName: string) => {
   anchor.download = fileName;
   anchor.click();
   URL.revokeObjectURL(href);
+};
+
+export const authenticatedBlobUrl = async (url: string) => {
+  const response = await fetch(url, { headers: tokenStore.get() ? { Authorization: `Bearer ${tokenStore.get()}` } : {} });
+  if (!response.ok) throw new ApiError('录音读取失败，请稍后重试', response.status);
+  return URL.createObjectURL(await response.blob());
 };

@@ -72,6 +72,7 @@ export class UsersService {
         pendingCount: row.assignments.length,
         todayAttempts: row.callAttempts.length,
         todayConnected: row.callAttempts.filter((item) => item.status === 'CONNECTED').length,
+        recordingEnabled: row.recordingEnabled,
         device: row.devices[0]
           ? this.mapDevice(row.devices[0], row, policy.deviceCompatibilityRequired)
           : null,
@@ -130,11 +131,12 @@ export class UsersService {
       data: {
         displayName: body.displayName,
         status,
+        ...(body.recordingEnabled === undefined ? {} : { recordingEnabled: body.recordingEnabled }),
         ...(!active && active !== undefined
           ? { tokenVersion: { increment: 1 } }
           : {}),
       },
-      select: { id: true, username: true, displayName: true, status: true },
+      select: { id: true, username: true, displayName: true, status: true, recordingEnabled: true },
     });
     if (status === UserStatus.DISABLED) {
       await Promise.all([
@@ -153,7 +155,11 @@ export class UsersService {
       action: 'AGENT_UPDATED',
       entityType: 'user',
       entityId: id,
-      metadata: { status, displayNameChanged: body.displayName !== undefined },
+      metadata: {
+        status,
+        displayNameChanged: body.displayName !== undefined,
+        recordingEnabled: body.recordingEnabled,
+      },
     }, client);
     return agent;
   }
@@ -204,6 +210,7 @@ export class UsersService {
       status: row.status,
       callPhonePermission: row.callPhonePermission,
       callLogPermission: row.callLogPermission,
+      recordAudioPermission: row.recordAudioPermission,
       lastHealthAt: row.lastHealthAt,
       activatedAt: row.activatedAt,
       createdAt: row.createdAt,
@@ -379,6 +386,7 @@ export class UsersService {
           latestVersionCode: policy.latestVersionCode,
           forceUpgrade: policy.forceUpgrade,
           maxCallAttempts: policy.maxCallAttempts,
+          recordingRetentionDays: policy.recordingRetentionDays,
           closedAssignments: result.closedAssignments,
         },
       }, tx);
@@ -401,6 +409,7 @@ export class UsersService {
       status: DeviceStatus;
       callPhonePermission: PermissionState;
       callLogPermission: PermissionState;
+      recordAudioPermission: PermissionState;
       lastHealthAt: Date | null;
       activatedAt: Date | null;
       createdAt: Date;
@@ -429,6 +438,7 @@ export class UsersService {
       active,
       permissionCallPhone: device.callPhonePermission === PermissionState.GRANTED,
       permissionReadCallLog: device.callLogPermission === PermissionState.GRANTED,
+      permissionRecordAudio: device.recordAudioPermission === PermissionState.GRANTED,
       lastSeenAt: device.lastHealthAt,
       activatedAt: device.activatedAt ?? device.createdAt,
     };

@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Post, Query, Req, Res } from '@nestjs/common';
+import { Controller, Get, Param, Post, Query, Req, Res, StreamableFile } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Role } from '@prisma/client';
 import type { Response } from 'express';
@@ -27,6 +27,30 @@ export class ReportsController {
   @Get('calls')
   calls(@Query() query: CallQueryDto) {
     return this.reports.calls(query);
+  }
+
+  @Get('calls/:id/recording')
+  async playRecording(
+    @Param('id') id: string,
+    @Req() request: RequestWithPrincipal,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const file = await this.reports.openRecording(id, request.user.sub, false);
+    response.setHeader('Content-Type', file.mimeType);
+    response.setHeader('Content-Disposition', `inline; filename="${file.fileName}"`);
+    return new StreamableFile(file.stream);
+  }
+
+  @Get('calls/:id/recording/download')
+  async downloadRecording(
+    @Param('id') id: string,
+    @Req() request: RequestWithPrincipal,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const file = await this.reports.openRecording(id, request.user.sub, true);
+    response.setHeader('Content-Type', file.mimeType);
+    response.setHeader('Content-Disposition', `attachment; filename="${file.fileName}"`);
+    return new StreamableFile(file.stream);
   }
 
   @Post('calls/:id/phone')

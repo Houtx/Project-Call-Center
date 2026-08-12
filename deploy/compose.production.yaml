@@ -12,6 +12,8 @@ x-api-environment: &api-environment
   PHONE_HASH_KEY: ${PHONE_HASH_KEY:?set PHONE_HASH_KEY in deploy/.env.production}
   WEB_ORIGIN: ${WEB_ORIGIN:?set WEB_ORIGIN in deploy/.env.production}
   TRUST_PROXY: "true"
+  RECORDINGS_DIR: /var/lib/project-call-center/recordings
+  RECORDING_ENCRYPTION_KEY: ${RECORDING_ENCRYPTION_KEY:?set RECORDING_ENCRYPTION_KEY in deploy/.env.production}
 
 x-api-service: &api-service
   image: ${API_IMAGE:-project-call-center-api:0.3.0}
@@ -27,6 +29,8 @@ x-api-service: &api-service
   read_only: true
   tmpfs:
     - /tmp:size=64m,mode=1777
+  volumes:
+    - recordings-data:/var/lib/project-call-center/recordings
 
 services:
   postgres:
@@ -132,3 +136,5 @@ networks:
 volumes:
   postgres-data:
     name: project-call-center-postgres-production
+  recordings-data:
+    name: project-call-center-recordings-production

@@ -13,7 +13,7 @@ describe('ReportsService', () => {
         ]),
       },
     };
-    const service = new ReportsService(prisma as any, { record: jest.fn() } as any, {} as any);
+    const service = new ReportsService(prisma as any, { record: jest.fn() } as any, {} as any, { metadata: jest.fn((item) => item), open: jest.fn() } as any);
 
     await expect(service.summary({ page: 1, pageSize: 20 } as any)).resolves.toMatchObject({
       attempts: 4,
@@ -47,7 +47,7 @@ describe('ReportsService', () => {
       device: { count: jest.fn().mockResolvedValueOnce(3).mockResolvedValueOnce(2) },
       mobileAppPolicy: { findUnique: jest.fn().mockResolvedValue({ minimumVersionCode: 1 }) },
     };
-    const service = new ReportsService(prisma as any, { record: jest.fn() } as any, {} as any);
+    const service = new ReportsService(prisma as any, { record: jest.fn() } as any, {} as any, { metadata: jest.fn((item) => item), open: jest.fn() } as any);
 
     const result = await service.dashboard();
 
@@ -107,7 +107,7 @@ describe('ReportsService', () => {
         }),
       },
     };
-    const service = new ReportsService(prisma as any, { record: jest.fn() } as any, {} as any);
+    const service = new ReportsService(prisma as any, { record: jest.fn() } as any, {} as any, { metadata: jest.fn((item) => item), open: jest.fn() } as any);
 
     await service.dashboard();
 
@@ -127,7 +127,7 @@ describe('ReportsService', () => {
         }),
       },
     };
-    const service = new ReportsService(prisma as any, audit as any, crypto as any);
+    const service = new ReportsService(prisma as any, audit as any, crypto as any, { metadata: jest.fn((item) => item), open: jest.fn() } as any);
 
     await expect(service.revealCallPhone('attempt-1', 'admin-1')).resolves.toMatchObject({
       phone: '+8613800000005',

@@ -42,6 +42,7 @@ describe('MobileService call completion', () => {
       prisma as any,
       {} as any,
       { record: jest.fn() } as any,
+      { createPending: jest.fn() } as any,
     );
 
     const result = await (service as any).recordObservation({
@@ -83,7 +84,7 @@ describe('MobileService call completion', () => {
         }),
       },
     };
-    const service = new MobileService(prisma as any, crypto as any, audit as any);
+    const service = new MobileService(prisma as any, crypto as any, audit as any, { createPending: jest.fn() } as any);
     jest.spyOn(service as any, 'requireDevice').mockResolvedValue({ id: 'device-1' });
 
     await expect(service.revealHistoryPhone('attempt-1', {
@@ -124,7 +125,7 @@ describe('MobileService call completion', () => {
       $transaction: jest.fn(async (operation: (client: typeof tx) => unknown) => operation(tx)),
     };
     const audit = { record: jest.fn() };
-    const service = new MobileService(prisma as any, {} as any, audit as any);
+    const service = new MobileService(prisma as any, {} as any, audit as any, { createPending: jest.fn() } as any);
     jest.spyOn(service as any, 'requireDevice').mockResolvedValue({ id: 'device-1' });
 
     await expect(service.cancelCallAttempt('attempt-1', {
@@ -153,7 +154,7 @@ describe('MobileService call completion', () => {
     const prisma = {
       $transaction: jest.fn(async (operation: (client: typeof tx) => unknown) => operation(tx)),
     };
-    const service = new MobileService(prisma as any, {} as any, { record: jest.fn() } as any);
+    const service = new MobileService(prisma as any, {} as any, { record: jest.fn() } as any, { createPending: jest.fn() } as any);
     jest.spyOn(service as any, 'requireDevice').mockResolvedValue({ id: 'device-1' });
 
     await expect(service.cancelCallAttempt('attempt-1', {

@@ -79,6 +79,14 @@ export class CallObservationBatchDto {
   results!: CallObservationDto[];
 }
 
+export class RecordingUnsupportedDto {
+  @ApiPropertyOptional()
+  @IsString()
+  @MaxLength(120)
+  @IsOptional()
+  reason?: string;
+}
+
 export class HeartbeatDto {
   @ApiProperty()
   @IsString()
@@ -97,4 +105,9 @@ export class HeartbeatDto {
   @ApiProperty({ enum: PermissionState })
   @IsEnum(PermissionState)
   callLogPermission!: PermissionState;
+
+  @ApiPropertyOptional({ enum: PermissionState, default: PermissionState.UNKNOWN })
+  @IsEnum(PermissionState)
+  @IsOptional()
+  recordAudioPermission?: PermissionState;
 }

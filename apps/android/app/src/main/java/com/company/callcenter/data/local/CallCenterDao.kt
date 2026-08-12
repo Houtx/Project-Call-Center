@@ -33,11 +33,26 @@ interface CallCenterDao {
     @Query("SELECT * FROM pending_call_attempts ORDER BY initiatedAt")
     suspend fun pendingCalls(): List<PendingCallEntity>
 
-    @Query("SELECT EXISTS(SELECT 1 FROM pending_call_attempts WHERE state = 'COLLECTING')")
+    @Query("SELECT * FROM pending_call_attempts WHERE attemptId = :attemptId")
+    suspend fun pendingCall(attemptId: String): PendingCallEntity?
+
+    @Query("SELECT EXISTS(SELECT 1 FROM pending_call_attempts WHERE state IN ('COLLECTING', 'RESULT_SYNCED'))")
     fun observeHasPendingCall(): Flow<Boolean>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertPendingCall(item: PendingCallEntity)
+
+    @Query("UPDATE pending_call_attempts SET recordingPath = :path, recordingStartedAt = :startedAt WHERE attemptId = :attemptId")
+    suspend fun setRecordingPath(attemptId: String, path: String, startedAt: Long)
+
+    @Query("UPDATE pending_call_attempts SET recordingPath = NULL, recordingStartedAt = NULL WHERE attemptId = :attemptId")
+    suspend fun clearRecordingPath(attemptId: String)
+
+    @Query("UPDATE pending_call_attempts SET state = 'RESULT_SYNCED' WHERE attemptId = :attemptId")
+    suspend fun markCallResultSynced(attemptId: String)
+
+    @Query("UPDATE pending_call_attempts SET recordingRequested = 0, recordingPath = NULL, recordingStartedAt = NULL WHERE attemptId = :attemptId")
+    suspend fun markRecordingSettled(attemptId: String)
 
     @Query("UPDATE pending_call_attempts SET retryCount = retryCount + 1, lastTriedAt = :at WHERE attemptId = :attemptId")
     suspend fun markPendingTried(attemptId: String, at: Long)

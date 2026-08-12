@@ -11,7 +11,7 @@ import type { Agent, AllowedDeviceModel, Device, MobileAppPolicy } from '../type
 
 interface AgentForm { username: string; displayName: string; password: string }
 interface DeviceModelForm { manufacturer: string; model: string; androidSdk: number; notes?: string }
-type PolicyForm = Pick<MobileAppPolicy, 'minimumVersionCode' | 'latestVersionCode' | 'forceUpgrade' | 'deviceCompatibilityRequired' | 'maxCallAttempts'> & { downloadUrl?: string };
+type PolicyForm = Pick<MobileAppPolicy, 'minimumVersionCode' | 'latestVersionCode' | 'forceUpgrade' | 'deviceCompatibilityRequired' | 'maxCallAttempts' | 'recordingRetentionDays'> & { downloadUrl?: string };
 
 export function AgentsPage() {
   const { message } = App.useApp();
@@ -37,6 +37,7 @@ export function AgentsPage() {
       forceUpgrade: mobilePolicy.forceUpgrade,
       deviceCompatibilityRequired: mobilePolicy.deviceCompatibilityRequired ?? true,
       maxCallAttempts: mobilePolicy.maxCallAttempts ?? 2,
+      recordingRetentionDays: mobilePolicy.recordingRetentionDays ?? 30,
       downloadUrl: mobilePolicy.downloadUrl ?? undefined,
     });
   }, [mobilePolicy, policyForm]);
@@ -128,6 +129,7 @@ export function AgentsPage() {
     { title: '设备状态', dataIndex: 'health', render: (status: string) => <StatusTag status={status} /> },
     { title: '拨号权限', dataIndex: 'permissionCallPhone', render: (value: boolean) => <Badge status={value ? 'success' : 'error'} text={value ? '已授权' : '未授权'} /> },
     { title: '通话记录权限', dataIndex: 'permissionReadCallLog', render: (value: boolean) => <Badge status={value ? 'success' : 'error'} text={value ? '已授权' : '未授权'} /> },
+    { title: '录音权限', dataIndex: 'permissionRecordAudio', render: (value: boolean) => <Badge status={value ? 'success' : 'warning'} text={value ? '已授权' : '未授权'} /> },
     { title: '最近在线', dataIndex: 'lastSeenAt', render: formatDateTime },
     { title: '操作', width: 80, render: (_: unknown, device: Device) => device.active ? <Popconfirm title="确认撤销设备？" description="撤销后该设备将立即失去访问权限。" onConfirm={() => revoke(device)} okText="撤销" cancelText="取消"><Button type="text" danger icon={<Unlink size={15} />}>撤销</Button></Popconfirm> : '-' },
   ];
@@ -147,6 +149,7 @@ export function AgentsPage() {
                 { title: '待外呼', dataIndex: 'pendingCount', align: 'right' },
                 { title: '今日外呼', dataIndex: 'todayAttempts', align: 'right', render: (value) => value ?? '-' },
                 { title: '今日接通率', render: (_, row) => row.todayAttempts === undefined || row.todayConnected === undefined ? '-' : formatPercent(row.todayAttempts ? row.todayConnected / row.todayAttempts : 0) },
+                { title: '录音', dataIndex: 'recordingEnabled', render: (enabled: boolean, row: Agent) => <Switch size="small" checked={enabled} checkedChildren="开启" unCheckedChildren="关闭" onChange={async (checked) => { try { await api.agents.update(row.id, { recordingEnabled: checked }); message.success(checked ? '已开启该坐席录音' : '已关闭该坐席录音'); remote.reload(); } catch (error) { message.error(error instanceof Error ? error.message : '录音设置失败'); } }} /> },
                 { title: '绑定设备', dataIndex: 'device', render: (device) => device ? <Space><Smartphone size={15} />{device.brand} {device.model}<StatusTag status={device.health} /></Space> : <Tag>未绑定</Tag> },
                 { title: '创建时间', dataIndex: 'createdAt', render: formatDateTime },
                 { title: '操作', width: 150, render: (_, row) => row.device ? <Popconfirm title="确认撤销当前设备？" description="撤销后该手机将立即下线，坐席可直接重新登录。" onConfirm={() => revoke(row.device!)} okText="撤销" cancelText="取消"><Tooltip title="撤销设备"><Button type="text" danger icon={<Unlink size={15} />} /></Tooltip></Popconfirm> : <Tag>登录后自动绑定</Tag> },
@@ -166,6 +169,7 @@ export function AgentsPage() {
                     <Form.Item name="minimumVersionCode" label="最低版本号" rules={[{ required: true }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item>
                     <Form.Item name="latestVersionCode" label="最新版本号" dependencies={['minimumVersionCode']} rules={[{ required: true }, ({ getFieldValue }) => ({ validator: (_, value) => value >= getFieldValue('minimumVersionCode') ? Promise.resolve() : Promise.reject(new Error('不能低于最低版本号')) })]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item>
                     <Form.Item className="form-span-2" name="maxCallAttempts" label="单个客户最大外呼次数" rules={[{ required: true, message: '请设置最大外呼次数' }]} extra="未接通或结果未知达到上限后，该客户将自动完成；默认 2 次。"><InputNumber min={1} max={10} precision={0} addonAfter="次" style={{ width: '100%' }} /></Form.Item>
+                    <Form.Item className="form-span-2" name="recordingRetentionDays" label="录音保留天数" rules={[{ required: true, message: '请设置录音保留天数' }]} extra="Worker 每分钟清理超过此期限的录音文件，只保留通话记录元数据。"><InputNumber min={1} max={365} precision={0} addonAfter="天" style={{ width: '100%' }} /></Form.Item>
                     <Form.Item className="form-span-2" name="downloadUrl" label="APK 下载地址" rules={[{ type: 'url', message: '请输入完整 HTTPS 地址' }, { pattern: /^https:\/\//, message: '正式下载地址必须使用 HTTPS' }]}><Input placeholder="https://call.example.com/download/app.apk" /></Form.Item>
                     <Form.Item className="form-span-2" name="forceUpgrade" label="强制升级" valuePropName="checked" extra="开启后，低于最新版本号的 APP 必须升级后才能登录和外呼。"><Switch checkedChildren="开启" unCheckedChildren="关闭" /></Form.Item>
                     <Form.Item

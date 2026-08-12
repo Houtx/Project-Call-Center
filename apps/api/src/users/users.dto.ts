@@ -44,6 +44,11 @@ export class UpdateAgentDto {
   @IsBoolean()
   @IsOptional()
   enabled?: boolean;
+
+  @ApiPropertyOptional({ description: '是否为该坐席新发起的外呼采集录音' })
+  @IsBoolean()
+  @IsOptional()
+  recordingEnabled?: boolean;
 }
 
 export class ResetPasswordDto {
@@ -121,6 +126,13 @@ export class UpdateMobileAppPolicyDto {
   @Max(10)
   @IsOptional()
   maxCallAttempts?: number;
+
+  @ApiPropertyOptional({ minimum: 1, maximum: 365, default: 30 })
+  @IsInt()
+  @Min(1)
+  @Max(365)
+  @IsOptional()
+  recordingRetentionDays?: number;
 
   @ApiPropertyOptional()
   @IsUrl({ protocols: ['https'], require_protocol: true })

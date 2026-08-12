@@ -33,6 +33,9 @@ data class PendingCallEntity(
     val state: String = "COLLECTING",
     val retryCount: Int = 0,
     val lastTriedAt: Long? = null,
+    val recordingRequested: Boolean = false,
+    val recordingPath: String? = null,
+    val recordingStartedAt: Long? = null,
 )
 
 @Entity(tableName = "call_history")

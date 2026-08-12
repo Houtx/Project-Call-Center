@@ -106,6 +106,7 @@ export interface Agent {
   todayConnected?: number;
   device?: Device | null;
   createdAt: string;
+  recordingEnabled?: boolean;
 }
 
 export type DeviceHealth = 'HEALTHY' | 'WARNING' | 'BLOCKED' | 'OFFLINE';
@@ -122,6 +123,7 @@ export interface Device {
   active: boolean;
   permissionCallPhone: boolean;
   permissionReadCallLog: boolean;
+  permissionRecordAudio: boolean;
   lastSeenAt?: string | null;
   activatedAt: string;
 }
@@ -144,6 +146,7 @@ export interface MobileAppPolicy {
   forceUpgrade: boolean;
   deviceCompatibilityRequired: boolean;
   maxCallAttempts: number;
+  recordingRetentionDays: number;
   downloadUrl?: string | null;
   updatedAt: string;
 }
@@ -165,6 +168,18 @@ export interface CallRecord {
   endedAt?: string | null;
   durationSeconds?: number | null;
   collectedAt?: string | null;
+  recording?: CallRecording | null;
+}
+
+export interface CallRecording {
+  id: Id;
+  status: 'PENDING' | 'UPLOADING' | 'READY' | 'FAILED' | 'UNSUPPORTED' | 'DELETED';
+  mimeType?: string | null;
+  sizeBytes?: number | null;
+  durationSeconds?: number | null;
+  createdAt: string;
+  uploadedAt?: string | null;
+  deletedAt?: string | null;
 }
 
 export interface ReportSummary {

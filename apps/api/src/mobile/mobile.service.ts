@@ -21,6 +21,7 @@ import { AuditService } from '../common/audit.service';
 import type { AuthPrincipal } from '../common/contracts';
 import { CryptoService } from '../common/crypto.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { RecordingService } from '../common/recording.service';
 import {
   CallObservationBatchDto,
   CallObservationDto,
@@ -39,6 +40,7 @@ export class MobileService {
     private readonly prisma: PrismaService,
     private readonly crypto: CryptoService,
     private readonly audit: AuditService,
+    private readonly recordings: RecordingService,
   ) {}
 
   async bootstrap(principal: AuthPrincipal) {
@@ -175,6 +177,7 @@ export class MobileService {
           create: { id: 'android' },
           update: {},
         });
+        const agent = await tx.user.findUnique({ where: { id: principal.sub }, select: { recordingEnabled: true } });
         const previous = await tx.callAttempt.findMany({
           where: { assignmentId: assignment.id },
           orderBy: { initiatedAt: 'desc' },
@@ -195,7 +198,7 @@ export class MobileService {
           });
         }
         const now = new Date();
-        return tx.callAttempt.create({
+        const created = await tx.callAttempt.create({
           data: {
             assignmentId: assignment.id,
             customerId: assignment.customerId,
@@ -204,6 +207,7 @@ export class MobileService {
             clientAttemptId: body.clientAttemptId,
             attemptNumber: eligibility.attemptNumber,
             status: AttemptStatus.COLLECTING,
+            recordingRequested: Boolean(agent?.recordingEnabled),
             dialTokenHash: createHash('sha256').update(`${body.clientAttemptId}:${now.toISOString()}`).digest('hex'),
             dialTokenExpiresAt: new Date(now.getTime() + DIAL_NUMBER_TTL_MS),
             callLogBaselineId: body.callLogBaselineId,
@@ -214,6 +218,10 @@ export class MobileService {
           },
           include: { customer: true },
         });
+        if (created.recordingRequested) {
+          await this.recordings.createPending(created.id, principal.sub, device.id, tx);
+        }
+        return created;
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
     );
@@ -266,6 +274,24 @@ export class MobileService {
     return { cancelled: true };
   }
 
+  async uploadRecording(attemptId: string, file: Express.Multer.File | undefined, principal: AuthPrincipal) {
+    const device = await this.requireDevice(principal, false, false);
+    if (!file) throw new BadRequestException({ code: 'RECORDING_FILE_REQUIRED' });
+    const attempt = await this.prisma.callAttempt.findFirst({ where: { id: attemptId, agentId: principal.sub, deviceId: device.id, recordingRequested: true } });
+    if (!attempt) throw new ConflictException({ code: 'CALL_RECORDING_NOT_REQUESTED' });
+    return this.recordings.upload(attemptId, principal.sub, device.id, {
+      buffer: file.buffer,
+      mimetype: file.mimetype,
+    });
+  }
+
+  async markRecordingUnsupported(attemptId: string, reason: string, principal: AuthPrincipal) {
+    const device = await this.requireDevice(principal, false, false);
+    const attempt = await this.prisma.callAttempt.findFirst({ where: { id: attemptId, agentId: principal.sub, deviceId: device.id, recordingRequested: true } });
+    if (!attempt) throw new ConflictException({ code: 'CALL_RECORDING_NOT_REQUESTED' });
+    return this.recordings.markUnsupported(attemptId, principal.sub, device.id, reason.slice(0, 120));
+  }
+
   async observeCalls(body: CallObservationBatchDto, principal: AuthPrincipal) {
     const device = await this.requireDevice(principal, false, false);
     let accepted = 0;
@@ -309,6 +335,7 @@ export class MobileService {
         appVersionCode: body.appVersionCode,
         callPhonePermission: body.callPhonePermission,
         callLogPermission: body.callLogPermission,
+        recordAudioPermission: body.recordAudioPermission ?? PermissionState.UNKNOWN,
         lastHealthAt: new Date(),
       },
     });
@@ -631,6 +658,7 @@ export class MobileService {
       attemptNumber: number;
       dialTokenExpiresAt: Date | null;
       collectingDeadlineAt: Date | null;
+      recordingRequested: boolean;
     },
     customer: { phoneCiphertext: Uint8Array; phoneIv: Uint8Array; phoneTag: Uint8Array },
   ) {
@@ -640,6 +668,7 @@ export class MobileService {
       expiresAt: attempt.dialTokenExpiresAt!.toISOString(),
       collectionDeadlineAt: attempt.collectingDeadlineAt!.toISOString(),
       attemptNumber: attempt.attemptNumber,
+      recordingRequested: attempt.recordingRequested,
     };
   }
 

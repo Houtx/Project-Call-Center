@@ -23,6 +23,8 @@ import com.company.callcenter.data.remote.ApiProblemParser
 import com.company.callcenter.data.remote.ServerEndpoint
 import com.company.callcenter.telephony.CallObservationPolicy
 import com.company.callcenter.telephony.CallLogReader
+import com.company.callcenter.telephony.CallRecorder
+import com.company.callcenter.telephony.CallRecordingService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
@@ -33,12 +35,15 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
+import okhttp3.RequestBody.Companion.asRequestBody
 import retrofit2.HttpException
 import java.io.IOException
 import java.time.Instant
 import java.util.UUID
 
-data class DialAuthorization(val attemptId: String, val phone: String)
+data class DialAuthorization(val attemptId: String, val phone: String, val recordingRequested: Boolean)
 
 class CallCenterRepository(
     private val context: Context,
@@ -46,6 +51,7 @@ class CallCenterRepository(
     private val apiFactory: ApiFactory,
     private val session: SessionStore,
     private val callLogReader: CallLogReader,
+    private val callRecorder: CallRecorder,
 ) {
     private val tokenRefreshMutex = Mutex()
     private val serverConfigurationMutex = Mutex()
@@ -292,9 +298,10 @@ class CallCenterRepository(
                     callLogBaselineId = baselineId,
                     initiatedAt = initiatedAt,
                     deadlineAt = response.collectionDeadlineAt.toEpochMillis(),
+                    recordingRequested = response.recordingRequested,
                 ),
             )
-            DialAuthorization(response.attemptId, response.phone)
+            DialAuthorization(response.attemptId, response.phone, response.recordingRequested)
         }
     }
 
@@ -304,12 +311,85 @@ class CallCenterRepository(
         dao.deletePendingCall(attemptId)
     }
 
+    suspend fun startRecording(attemptId: String): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            val started = callRecorder.start(attemptId)
+            dao.setRecordingPath(attemptId, started.file.absolutePath, started.startedAt)
+            CallRecordingService.start(context, attemptId)
+        }.onFailure {
+            callRecorder.discard()
+            dao.clearRecordingPath(attemptId)
+        }.isSuccess
+    }
+
+    fun stopRecording(): com.company.callcenter.telephony.RecordingFile? = callRecorder.stop()
+
+    fun discardRecording() {
+        callRecorder.discard()
+        CallRecordingService.stop(context)
+    }
+
+    suspend fun markRecordingUnsupported(attemptId: String, reason: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            serverCall { api ->
+                api.markRecordingUnsupported(attemptId, mapOf("reason" to reason))
+            }
+            dao.markRecordingSettled(attemptId)
+            true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    private suspend fun finishRecordingLocked(attemptId: String): Boolean {
+        callRecorder.stop()?.let { stopped ->
+            dao.setRecordingPath(attemptId, stopped.file.absolutePath, stopped.startedAt)
+        }
+        CallRecordingService.stop(context)
+        val pending = dao.pendingCall(attemptId)
+        val path = pending?.recordingPath?.let { java.io.File(it) }
+        if (path == null || !path.exists()) {
+            return try {
+                serverCallLocked { api ->
+                    api.markRecordingUnsupported(attemptId, mapOf("reason" to "RECORDER_STOP_EMPTY"))
+                }
+                dao.markRecordingSettled(attemptId)
+                true
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                false
+            }
+        }
+        return try {
+            serverCallLocked { api ->
+                val body = path.asRequestBody("audio/mp4".toMediaType())
+                api.uploadRecording(attemptId, MultipartBody.Part.createFormData("file", path.name, body))
+            }
+            path.delete()
+            dao.markRecordingSettled(attemptId)
+            true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Throwable) {
+            // Keep the private file and retry it on the next CallLog reconciliation pass.
+            false
+        }
+    }
+
     suspend fun reconcilePending(): Int = withContext(Dispatchers.IO) {
         val synced = serverConfigurationMutex.withLock {
             if (!callLogReader.hasPermission() || session.accessToken == null) return@withLock 0
             var completed = 0
             dao.pendingCalls().forEach { pending ->
                 dao.markPendingTried(pending.attemptId, System.currentTimeMillis())
+                if (pending.state == "RESULT_SYNCED") {
+                    val recordingSettled = !pending.recordingRequested || finishRecordingLocked(pending.attemptId)
+                    if (recordingSettled) dao.deletePendingCall(pending.attemptId)
+                    return@forEach
+                }
                 val phone = runCatching { session.decryptPhone(pending.encryptedPhone) }.getOrNull()
                     ?: return@forEach
                 val matched = callLogReader.findOutgoing(phone, pending.callLogBaselineId, pending.initiatedAt)
@@ -328,7 +408,9 @@ class CallCenterRepository(
                                 syncedAt = System.currentTimeMillis(),
                             ),
                         )
-                        dao.deletePendingCall(pending.attemptId)
+                        dao.markCallResultSynced(pending.attemptId)
+                        val recordingSettled = !pending.recordingRequested || finishRecordingLocked(pending.attemptId)
+                        if (recordingSettled) dao.deletePendingCall(pending.attemptId)
                     }
                     return@forEach
                 }
@@ -365,8 +447,10 @@ class CallCenterRepository(
                             syncedAt = System.currentTimeMillis(),
                         ),
                     )
-                    dao.deletePendingCall(pending.attemptId)
+                    dao.markCallResultSynced(pending.attemptId)
                 }
+                val recordingSettled = !pending.recordingRequested || finishRecordingLocked(pending.attemptId)
+                if (recordingSettled) dao.deletePendingCall(pending.attemptId)
                 completed += 1
             }
             completed
@@ -391,6 +475,7 @@ class CallCenterRepository(
                 appVersionCode = BuildConfig.VERSION_CODE,
                 callPhonePermission = permissionState(Manifest.permission.CALL_PHONE),
                 callLogPermission = permissionState(Manifest.permission.READ_CALL_LOG),
+                recordAudioPermission = permissionState(Manifest.permission.RECORD_AUDIO),
             ),
         ) }
     }

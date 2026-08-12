@@ -8,6 +8,7 @@ import {
 } from '@prisma/client';
 import { AuditService } from '../common/audit.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { RecordingService } from '../common/recording.service';
 
 @Injectable()
 export class CallReconciliationService {
@@ -16,6 +17,7 @@ export class CallReconciliationService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly recordings: RecordingService,
   ) {}
 
   async reconcileExpired(limit = 500): Promise<number> {
@@ -115,5 +117,6 @@ export class CallReconciliationService {
   async housekeeping(): Promise<void> {
     const now = new Date();
     await this.prisma.idempotencyRecord.deleteMany({ where: { expiresAt: { lt: now } } });
+    await this.recordings.cleanupExpired();
   }
 }

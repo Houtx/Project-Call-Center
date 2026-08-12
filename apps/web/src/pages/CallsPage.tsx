@@ -1,12 +1,12 @@
 import { useState } from 'react';
 import dayjs from 'dayjs';
-import { App, Button, Descriptions, Modal, Space, Table, Tooltip } from 'antd';
-import { Download, Eye, PhoneCall, RefreshCw } from 'lucide-react';
+import { App, Button, Descriptions, Modal, Space, Table, Tag, Tooltip } from 'antd';
+import { Download, Eye, Headphones, PhoneCall, RefreshCw } from 'lucide-react';
 import { PageHeader } from '../components/PageHeader';
 import { CallFilters } from '../components/CallFilters';
 import { ErrorState } from '../components/AsyncState';
 import { StatusTag } from '../components/StatusTag';
-import { api, downloadAuthenticated } from '../lib/api';
+import { api, authenticatedBlobUrl, downloadAuthenticated } from '../lib/api';
 import { formatDateTime, formatDuration } from '../lib/format';
 import { useRemote } from '../hooks/useRemote';
 import type { CallRecord, ListOptions } from '../types/domain';
@@ -21,7 +21,7 @@ const todayQuery = (): ListOptions => ({
 export function CallsPage() {
   const { message } = App.useApp();
   const [query, setQuery] = useState<ListOptions>(todayQuery);
-  const [detail, setDetail] = useState<(CallRecord & { phone?: string; expiresAt?: string })>();
+  const [detail, setDetail] = useState<(CallRecord & { phone?: string; expiresAt?: string; recordingUrl?: string })>();
   const remote = useRemote(() => Promise.all([
     api.calls.list(query),
     api.agents.list({ page: 1, pageSize: 100 }),
@@ -58,12 +58,13 @@ export function CallsPage() {
             { title: '通话时长', dataIndex: 'durationSeconds', width: 120, render: formatDuration },
             { title: '结束时间', dataIndex: 'endedAt', width: 180, render: formatDateTime },
             { title: '回传时间', dataIndex: 'collectedAt', width: 180, render: formatDateTime },
+            { title: '录音', dataIndex: 'recording', width: 150, render: (recording: CallRecord['recording'], record: CallRecord) => recording?.status === 'READY' ? <Space><Tooltip title="在线播放"><Button type="text" icon={<Headphones size={15} />} onClick={async () => { try { const url = await authenticatedBlobUrl(api.calls.recordingUrl(record.id)); setDetail({ ...record, recordingUrl: url }); } catch (error) { message.error(error instanceof Error ? error.message : '录音读取失败'); } }} /></Tooltip><Tooltip title="下载录音"><Button type="text" icon={<Download size={15} />} onClick={() => downloadAuthenticated(api.calls.recordingDownloadUrl(record.id), `录音-${record.id}.m4a`).catch((error: Error) => message.error(error.message))} /></Tooltip></Space> : <Tag>{recording?.status === 'UNSUPPORTED' ? '设备不支持' : recording?.status === 'DELETED' ? '已清理' : recording?.status === 'FAILED' ? '失败' : recording ? '采集中' : '未开启'}</Tag> },
             { title: '操作', fixed: 'right', width: 70, render: (_, record) => <Tooltip title="查看完整号码（将记录审计）"><Button aria-label="查看完整号码" type="text" icon={<Eye size={15} />} onClick={() => revealCallPhone(record)} /></Tooltip> },
           ]}
           pagination={{ current: query.page, pageSize: query.pageSize, total: calls?.total, showSizeChanger: true, showTotal: (total) => `共 ${total} 条`, onChange: (page, pageSize) => setQuery((current) => ({ ...current, page, pageSize })) }}
         />
       </section>
-      <Modal title="通话详情" open={Boolean(detail)} onCancel={() => setDetail(undefined)} footer={<Button onClick={() => setDetail(undefined)}>关闭</Button>}>
+      <Modal title="通话详情" open={Boolean(detail)} onCancel={() => { if (detail?.recordingUrl) URL.revokeObjectURL(detail.recordingUrl); setDetail(undefined); }} footer={<Button onClick={() => { if (detail?.recordingUrl) URL.revokeObjectURL(detail.recordingUrl); setDetail(undefined); }}>关闭</Button>}>
         {detail && <Descriptions bordered column={1} size="small">
           <Descriptions.Item label="外呼尝试 ID"><span className="mono break-all">{detail.attemptId}</span></Descriptions.Item>
           <Descriptions.Item label="客户">{detail.customerName}</Descriptions.Item>
@@ -74,6 +75,7 @@ export function CallsPage() {
           <Descriptions.Item label="结束时间">{formatDateTime(detail.endedAt)}</Descriptions.Item>
           <Descriptions.Item label="通话时长">{formatDuration(detail.durationSeconds)}</Descriptions.Item>
           <Descriptions.Item label="数据回传">{formatDateTime(detail.collectedAt)}</Descriptions.Item>
+          <Descriptions.Item label="录音">{detail.recording?.status === 'READY' ? detail.recordingUrl ? <audio controls preload="metadata" src={detail.recordingUrl} style={{ width: '100%' }} /> : '正在读取录音...' : detail.recording?.status === 'DELETED' ? '已按保留策略清理' : detail.recording?.status === 'UNSUPPORTED' ? '该设备无法采集系统通话音频' : detail.recording ? '录音尚未就绪' : '该坐席未开启录音'}</Descriptions.Item>
         </Descriptions>}
       </Modal>
     </>

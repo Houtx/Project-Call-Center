@@ -11,6 +11,7 @@ import {
 import { AuditService } from '../common/audit.service';
 import { CryptoService } from '../common/crypto.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { RecordingService } from '../common/recording.service';
 import { AuditQueryDto, CallQueryDto } from './reports.dto';
 
 interface SummaryAttempt {
@@ -30,6 +31,7 @@ export class ReportsService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly crypto: CryptoService,
+    private readonly recordings: RecordingService,
   ) {}
 
   async summary(query: CallQueryDto) {
@@ -206,6 +208,7 @@ export class ReportsService {
           customer: { include: { batch: true } },
           agent: true,
           result: true,
+          recording: true,
         },
       }),
       this.prisma.callAttempt.count({ where }),
@@ -216,6 +219,10 @@ export class ReportsService {
       page: query.page,
       pageSize: query.pageSize,
     };
+  }
+
+  async openRecording(id: string, actorId: string, download: boolean) {
+    return this.recordings.open(id, actorId, download);
   }
 
   async revealCallPhone(id: string, actorId: string) {
@@ -249,6 +256,7 @@ export class ReportsService {
         customer: { include: { batch: true } },
         agent: true,
         result: true,
+        recording: true,
       },
     });
     const data = [
@@ -340,7 +348,14 @@ export class ReportsService {
     };
   }
 
-  private callRecord(row: any) {
+  private callRecord(row: Prisma.CallAttemptGetPayload<{
+    include: {
+      customer: { include: { batch: true } };
+      agent: true;
+      result: true;
+      recording: true;
+    };
+  }>) {
     return {
       id: row.id,
       attemptId: row.id,
@@ -356,6 +371,9 @@ export class ReportsService {
       endedAt: row.result?.systemCallEndedAt?.toISOString() ?? null,
       durationSeconds: row.result?.durationSeconds ?? null,
       collectedAt: row.result?.receivedAt?.toISOString() ?? null,
+      recording: row.recording
+        ? this.recordings.metadata(row.recording)
+        : null,
     };
   }
 

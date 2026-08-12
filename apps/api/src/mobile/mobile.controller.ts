@@ -7,7 +7,10 @@ import {
   Post,
   Query,
   Req,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Role } from '@prisma/client';
 import type { RequestWithPrincipal } from '../common/contracts';
@@ -16,6 +19,7 @@ import {
   CallObservationBatchDto,
   CreateCallAttemptDto,
   HeartbeatDto,
+  RecordingUnsupportedDto,
 } from './mobile.dto';
 import { MobileService } from './mobile.service';
 
@@ -66,6 +70,29 @@ export class MobileController {
     @Req() request: RequestWithPrincipal,
   ) {
     return this.mobile.cancelCallAttempt(attemptId, request.user);
+  }
+
+  @ApiBearerAuth()
+  @Roles(Role.AGENT)
+  @Post('call-attempts/:attemptId/recording')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 25 * 1024 * 1024 } }))
+  uploadRecording(
+    @Param('attemptId') attemptId: string,
+    @UploadedFile() file: Express.Multer.File,
+    @Req() request: RequestWithPrincipal,
+  ) {
+    return this.mobile.uploadRecording(attemptId, file, request.user);
+  }
+
+  @ApiBearerAuth()
+  @Roles(Role.AGENT)
+  @Post('call-attempts/:attemptId/recording/unsupported')
+  markRecordingUnsupported(
+    @Param('attemptId') attemptId: string,
+    @Body() body: RecordingUnsupportedDto,
+    @Req() request: RequestWithPrincipal,
+  ) {
+    return this.mobile.markRecordingUnsupported(attemptId, body.reason ?? 'DEVICE_AUDIO_SOURCE_UNAVAILABLE', request.user);
   }
 
   @ApiBearerAuth()

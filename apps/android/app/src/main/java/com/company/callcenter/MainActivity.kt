@@ -76,6 +76,7 @@ class MainActivity : ComponentActivity() {
                                     Manifest.permission.CALL_PHONE,
                                     Manifest.permission.READ_CALL_LOG,
                                     Manifest.permission.READ_PHONE_STATE,
+                                    Manifest.permission.RECORD_AUDIO,
                                 ),
                             )
                         },
@@ -176,8 +177,12 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.dialEvents.collect { authorization ->
+                    if (authorization.recordingRequested && !appContainer.repository.startRecording(authorization.attemptId)) {
+                        appContainer.repository.markRecordingUnsupported(authorization.attemptId, "VOICE_CALL_SOURCE_REJECTED")
+                    }
                     runCatching { appContainer.simCallManager.placeCall(authorization.phone) }
                         .onFailure { failure ->
+                            appContainer.repository.discardRecording()
                             viewModel.reportDialLaunchFailure(authorization.attemptId, failure)
                         }
                 }
