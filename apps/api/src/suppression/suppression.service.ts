@@ -60,14 +60,17 @@ export class SuppressionService {
     };
   }
 
-  async add(body: AddSuppressionDto, actorId: string) {
+  async add(
+    body: AddSuppressionDto,
+    actorId: string,
+    client?: Prisma.TransactionClient,
+  ) {
     const normalized = this.crypto.normalizePhone(body.phone);
     const phoneHash = this.crypto.hashPhone(normalized);
     const encrypted = this.crypto.encryptPhone(normalized);
     const now = new Date();
 
-    const result = await this.prisma.$transaction(
-      async (tx) => {
+    const operation = async (tx: Prisma.TransactionClient) => {
         const current = await tx.suppressionEntry.findFirst({
           where: { phoneHash, revokedAt: null },
         });
@@ -108,7 +111,10 @@ export class SuppressionService {
         for (const customer of customers) {
           await tx.customer.update({
             where: { id: customer.id },
-            data: { status: CustomerStatus.SUPPRESSED },
+            data: {
+              status: CustomerStatus.SUPPRESSED,
+              suppressionPreviousStatus: customer.status,
+            },
           });
           for (const assignment of customer.assignments) {
             await tx.assignment.update({
@@ -134,20 +140,30 @@ export class SuppressionService {
             });
           }
         }
-        return { entry, withdrawnAssignments: customers.reduce((sum, customer) => sum + customer.assignments.length, 0) };
-      },
-      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-    );
-    await this.audit.record({
-      actorId,
-      action: 'SUPPRESSION_ADDED',
-      entityType: 'suppression_entry',
-      entityId: result.entry.id,
-      metadata: {
-        phone: result.entry.phoneMasked,
-        withdrawnAssignments: result.withdrawnAssignments,
-      },
-    });
+        const result = {
+          entry,
+          withdrawnAssignments: customers.reduce(
+            (sum, customer) => sum + customer.assignments.length,
+            0,
+          ),
+        };
+        await this.audit.record({
+          actorId,
+          action: 'SUPPRESSION_ADDED',
+          entityType: 'suppression_entry',
+          entityId: result.entry.id,
+          metadata: {
+            phone: result.entry.phoneMasked,
+            withdrawnAssignments: result.withdrawnAssignments,
+          },
+        }, tx);
+        return result;
+      };
+    const result = client
+      ? await operation(client)
+      : await this.prisma.$transaction(operation, {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        });
     return {
       ...result.entry,
       reason: result.entry.reason ?? '',
@@ -157,9 +173,13 @@ export class SuppressionService {
     };
   }
 
-  async revoke(id: string, actorId: string): Promise<void> {
+  async revoke(
+    id: string,
+    actorId: string,
+    client?: Prisma.TransactionClient,
+  ): Promise<void> {
     const now = new Date();
-    const entry = await this.prisma.$transaction(async (tx) => {
+    const operation = async (tx: Prisma.TransactionClient) => {
       const current = await tx.suppressionEntry.findFirst({
         where: { id, revokedAt: null },
       });
@@ -168,18 +188,31 @@ export class SuppressionService {
         where: { id },
         data: { revokedAt: now, revokedById: actorId },
       });
-      await tx.customer.updateMany({
+      const customers = await tx.customer.findMany({
         where: { phoneHash: current.phoneHash, status: CustomerStatus.SUPPRESSED },
-        data: { status: CustomerStatus.AVAILABLE },
+        select: { id: true, suppressionPreviousStatus: true },
       });
+      for (const customer of customers) {
+        await tx.customer.update({
+          where: { id: customer.id },
+          data: {
+            status: customer.suppressionPreviousStatus === CustomerStatus.COMPLETED
+              ? CustomerStatus.COMPLETED
+              : CustomerStatus.AVAILABLE,
+            suppressionPreviousStatus: null,
+          },
+        });
+      }
+      await this.audit.record({
+        actorId,
+        action: 'SUPPRESSION_REVOKED',
+        entityType: 'suppression_entry',
+        entityId: id,
+        metadata: { phone: current.phoneMasked },
+      }, tx);
       return current;
-    });
-    await this.audit.record({
-      actorId,
-      action: 'SUPPRESSION_REVOKED',
-      entityType: 'suppression_entry',
-      entityId: id,
-      metadata: { phone: entry.phoneMasked },
-    });
+    };
+    if (client) await operation(client);
+    else await this.prisma.$transaction(operation);
   }
 }

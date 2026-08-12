@@ -104,4 +104,64 @@ describe('MobileService call completion', () => {
       metadata: { deviceId: 'device-1', phone: '138****0004' },
     });
   });
+
+  it('deletes a collecting attempt when the system dialer fails to launch', async () => {
+    const attempt = {
+      id: 'attempt-1',
+      assignmentId: 'assignment-1',
+      agentId: 'agent-1',
+      deviceId: 'device-1',
+      status: AttemptStatus.COLLECTING,
+      result: null,
+    };
+    const tx = {
+      callAttempt: {
+        findFirst: jest.fn().mockResolvedValue(attempt),
+        delete: jest.fn().mockResolvedValue(attempt),
+      },
+    };
+    const prisma = {
+      $transaction: jest.fn(async (operation: (client: typeof tx) => unknown) => operation(tx)),
+    };
+    const audit = { record: jest.fn() };
+    const service = new MobileService(prisma as any, {} as any, audit as any);
+    jest.spyOn(service as any, 'requireDevice').mockResolvedValue({ id: 'device-1' });
+
+    await expect(service.cancelCallAttempt('attempt-1', {
+      sub: 'agent-1',
+      role: 'AGENT',
+      deviceId: 'device-1',
+      tokenVersion: 1,
+    } as any)).resolves.toEqual({ cancelled: true });
+    expect(tx.callAttempt.delete).toHaveBeenCalledWith({ where: { id: 'attempt-1' } });
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'MOBILE_CALL_ATTEMPT_CANCELLED',
+        entityId: 'attempt-1',
+      }),
+      tx,
+    );
+  });
+
+  it('treats an already cancelled call attempt as successfully cancelled', async () => {
+    const tx = {
+      callAttempt: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        delete: jest.fn(),
+      },
+    };
+    const prisma = {
+      $transaction: jest.fn(async (operation: (client: typeof tx) => unknown) => operation(tx)),
+    };
+    const service = new MobileService(prisma as any, {} as any, { record: jest.fn() } as any);
+    jest.spyOn(service as any, 'requireDevice').mockResolvedValue({ id: 'device-1' });
+
+    await expect(service.cancelCallAttempt('attempt-1', {
+      sub: 'agent-1',
+      role: 'AGENT',
+      deviceId: 'device-1',
+      tokenVersion: 1,
+    } as any)).resolves.toEqual({ cancelled: true });
+    expect(tx.callAttempt.delete).not.toHaveBeenCalled();
+  });
 });

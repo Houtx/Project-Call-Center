@@ -30,6 +30,7 @@ export class AssignmentsService {
     agentId: string,
     actorId: string,
     recordAudit = true,
+    client?: Prisma.TransactionClient,
   ): Promise<number> {
     this.validateBatchSize(customerIds);
     const uniqueIds = [...new Set(customerIds)];
@@ -99,6 +100,7 @@ export class AssignmentsService {
         }
         return count;
       },
+      client,
     );
     if (recordAudit) {
       await this.audit.record({
@@ -106,7 +108,7 @@ export class AssignmentsService {
         action: 'CUSTOMERS_ASSIGNED',
         entityType: 'assignment',
         metadata: { customerIds: uniqueIds, agentId, count: changed },
-      });
+      }, client ?? this.prisma);
     }
     return changed;
   }
@@ -127,9 +129,9 @@ export class AssignmentsService {
     };
   }
 
-  async bulkAssign(body: BulkAssignmentDto, actorId: string) {
-    const targets = await this.requireBulkTargets(body.agentIds, body.quantity);
-    const preview = await this.resolveBulkCustomerIds(body);
+  async bulkAssign(body: BulkAssignmentDto, actorId: string, client?: Prisma.TransactionClient) {
+    const targets = await this.requireBulkTargets(body.agentIds, body.quantity, client);
+    const preview = await this.resolveBulkCustomerIds(body, client);
     const requestedCount = body.quantity;
     if (requestedCount > preview.customerIds.length) {
       throw new BadRequestException({
@@ -149,8 +151,8 @@ export class AssignmentsService {
       for (let offset = 0; offset < customerIds.length; offset += 1000) {
         const chunk = customerIds.slice(offset, offset + 1000);
         changed += body.assignmentStatus === 'NOT_CONNECTED'
-          ? await this.retryAssign(chunk, target.agent.id, actorId, false)
-          : await this.assignOrReassign(chunk, target.agent.id, actorId, false);
+          ? await this.retryAssign(chunk, target.agent.id, actorId, false, client)
+          : await this.assignOrReassign(chunk, target.agent.id, actorId, false, client);
       }
       assigned += changed;
       cursor += target.quantity;
@@ -180,7 +182,7 @@ export class AssignmentsService {
         requestedCount,
         assigned,
       },
-    });
+    }, client ?? this.prisma);
     return {
       scope: body.scope,
       matchedCount: preview.matchedCount,
@@ -194,14 +196,23 @@ export class AssignmentsService {
     };
   }
 
-  async reclaimCustomers(customerIds: string[], actorId: string): Promise<number> {
+  async reclaimCustomers(
+    customerIds: string[],
+    actorId: string,
+    client?: Prisma.TransactionClient,
+  ): Promise<number> {
     this.validateBatchSize(customerIds);
-    const assignments = await this.prisma.assignment.findMany({
+    const assignments = await (client ?? this.prisma).assignment.findMany({
       where: { customerId: { in: [...new Set(customerIds)] }, status: AssignmentStatus.ACTIVE },
       select: { id: true },
     });
     if (!assignments.length) return 0;
-    const result = await this.reclaim(assignments.map((item) => item.id), actorId, '管理员回收');
+    const result = await this.reclaim(
+      assignments.map((item) => item.id),
+      actorId,
+      '管理员回收',
+      client,
+    );
     return result.count;
   }
 
@@ -210,6 +221,7 @@ export class AssignmentsService {
     agentId: string,
     actorId: string,
     recordAudit = true,
+    client?: Prisma.TransactionClient,
   ): Promise<number> {
     this.validateBatchSize(customerIds);
     const uniqueIds = [...new Set(customerIds)];
@@ -311,7 +323,7 @@ export class AssignmentsService {
         });
       }
       return customers.length;
-    });
+    }, client);
 
     if (recordAudit) {
       await this.audit.record({
@@ -319,12 +331,17 @@ export class AssignmentsService {
         action: 'CUSTOMERS_RETRY_ASSIGNED',
         entityType: 'assignment',
         metadata: { customerIds: uniqueIds, agentId, count: changed },
-      });
+      }, client ?? this.prisma);
     }
     return changed;
   }
 
-  async assign(customerIds: string[], agentId: string, actorId: string) {
+  async assign(
+    customerIds: string[],
+    agentId: string,
+    actorId: string,
+    client?: Prisma.TransactionClient,
+  ) {
     this.validateBatchSize(customerIds);
     const result = await this.assignmentTransaction(
       async (tx) => {
@@ -387,17 +404,23 @@ export class AssignmentsService {
         }
         return assignments;
       },
+      client,
     );
     await this.audit.record({
       actorId,
       action: 'CUSTOMERS_ASSIGNED',
       entityType: 'assignment',
       metadata: { customerIds, agentId, count: result.length },
-    });
+    }, client ?? this.prisma);
     return { items: result, count: result.length };
   }
 
-  async reclaim(assignmentIds: string[], actorId: string, reason?: string) {
+  async reclaim(
+    assignmentIds: string[],
+    actorId: string,
+    reason?: string,
+    client?: Prisma.TransactionClient,
+  ) {
     this.validateBatchSize(assignmentIds);
     const now = new Date();
     const result = await this.assignmentTransaction(async (tx) => {
@@ -432,13 +455,13 @@ export class AssignmentsService {
         });
       }
       return assignments.length;
-    });
+    }, client);
     await this.audit.record({
       actorId,
       action: 'ASSIGNMENTS_RECLAIMED',
       entityType: 'assignment',
       metadata: { assignmentIds, reason, count: result },
-    });
+    }, client ?? this.prisma);
     return { count: result };
   }
 
@@ -447,6 +470,7 @@ export class AssignmentsService {
     targetAgentId: string,
     actorId: string,
     reason?: string,
+    client?: Prisma.TransactionClient,
   ) {
     this.validateBatchSize(assignmentIds);
     const now = new Date();
@@ -506,13 +530,14 @@ export class AssignmentsService {
         }
         return created;
       },
+      client,
     );
     await this.audit.record({
       actorId,
       action: 'ASSIGNMENTS_REASSIGNED',
       entityType: 'assignment',
       metadata: { assignmentIds, targetAgentId, count: items.length },
-    });
+    }, client ?? this.prisma);
     return { items, count: items.length };
   }
 
@@ -525,8 +550,8 @@ export class AssignmentsService {
     }
   }
 
-  private async requireAgent(agentId: string) {
-    const agent = await this.prisma.user.findFirst({
+  private async requireAgent(agentId: string, client?: Prisma.TransactionClient) {
+    const agent = await (client ?? this.prisma).user.findFirst({
       where: { id: agentId, role: Role.AGENT, status: UserStatus.ACTIVE },
       select: { id: true, username: true, displayName: true },
     });
@@ -534,7 +559,11 @@ export class AssignmentsService {
     return agent;
   }
 
-  private async requireBulkTargets(agentIds: string[], quantity: number) {
+  private async requireBulkTargets(
+    agentIds: string[],
+    quantity: number,
+    client?: Prisma.TransactionClient,
+  ) {
     if (!agentIds.length) {
       throw new BadRequestException({
         code: 'TARGET_AGENT_REQUIRED',
@@ -554,7 +583,7 @@ export class AssignmentsService {
         detail: `总分配数量不能少于所选坐席数（${agentIds.length} 名）`,
       });
     }
-    const agents = await Promise.all(agentIds.map((agentId) => this.requireAgent(agentId)));
+    const agents = await Promise.all(agentIds.map((agentId) => this.requireAgent(agentId, client)));
     const average = Math.floor(quantity / agents.length);
     const remainder = quantity % agents.length;
     return agents.map((agent, index) => ({
@@ -563,10 +592,11 @@ export class AssignmentsService {
     }));
   }
 
-  private async resolveBulkCustomerIds(body: BulkAssignmentDto) {
+  private async resolveBulkCustomerIds(body: BulkAssignmentDto, client?: Prisma.TransactionClient) {
+    const db = client ?? this.prisma;
     const candidates = body.scope === 'FILTER' && body.assignmentStatus === 'NOT_CONNECTED'
-      ? await this.findLatestNotConnectedCustomers(body)
-      : await this.prisma.customer.findMany({
+      ? await this.findLatestNotConnectedCustomers(body, client)
+      : await db.customer.findMany({
           where: this.buildBulkWhere(body),
           select: { id: true, phoneHash: true, status: true },
           orderBy: { createdAt: 'asc' },
@@ -575,7 +605,7 @@ export class AssignmentsService {
     for (let offset = 0; offset < candidates.length; offset += 1000) {
       const hashes = candidates.slice(offset, offset + 1000).map((item) => item.phoneHash);
       if (!hashes.length) continue;
-      const entries = await this.prisma.suppressionEntry.findMany({
+      const entries = await db.suppressionEntry.findMany({
         where: { phoneHash: { in: hashes }, revokedAt: null },
         select: { phoneHash: true },
       });
@@ -648,7 +678,10 @@ export class AssignmentsService {
     };
   }
 
-  private async findLatestNotConnectedCustomers(body: BulkAssignmentDto) {
+  private async findLatestNotConnectedCustomers(
+    body: BulkAssignmentDto,
+    client?: Prisma.TransactionClient,
+  ) {
     const conditions: Prisma.Sql[] = [
       Prisma.sql`latest_attempts."status" = 'NOT_CONNECTED'::"AttemptStatus"`,
     ];
@@ -685,7 +718,7 @@ export class AssignmentsService {
       conditions.push(Prisma.sql`customer."phoneHash" = ${phoneHash}`);
     }
 
-    return this.prisma.$queryRaw<Array<{
+    return (client ?? this.prisma).$queryRaw<Array<{
       id: string;
       phoneHash: string;
       status: CustomerStatus;
@@ -728,8 +761,10 @@ export class AssignmentsService {
 
   private async assignmentTransaction<T>(
     operation: (tx: Prisma.TransactionClient) => Promise<T>,
+    client?: Prisma.TransactionClient,
   ): Promise<T> {
     try {
+      if (client) return await operation(client);
       return await this.prisma.$transaction(operation, {
         isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
       });

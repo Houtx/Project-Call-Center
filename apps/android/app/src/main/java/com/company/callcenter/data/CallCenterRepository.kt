@@ -172,10 +172,25 @@ class CallCenterRepository(
 
     suspend fun logout() {
         serverConfigurationMutex.withLock {
-            session.clear()
-            apiFactory.invalidateCache()
-            dao.clearAll()
-            _maxCallAttempts.value = DEFAULT_MAX_CALL_ATTEMPTS
+            try {
+                val serverUrl = session.configuredServerUrl
+                val refreshToken = session.refreshToken
+                if (serverUrl != null && refreshToken != null) {
+                    try {
+                        apiFactory.api(serverUrl, session.accessToken)
+                            .logout(RefreshTokenRequest(refreshToken))
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Throwable) {
+                        // Local logout still proceeds when revocation cannot reach the server.
+                    }
+                }
+            } finally {
+                session.clear()
+                apiFactory.invalidateCache()
+                dao.clearAll()
+                _maxCallAttempts.value = DEFAULT_MAX_CALL_ATTEMPTS
+            }
         }
     }
 
@@ -281,6 +296,12 @@ class CallCenterRepository(
             )
             DialAuthorization(response.attemptId, response.phone)
         }
+    }
+
+    suspend fun cancelFailedCallAttempt(attemptId: String) = withContext(Dispatchers.IO) {
+        val cancelled = serverCall { api -> api.cancelCallAttempt(attemptId).cancelled }
+        check(cancelled) { "服务器未能撤销外呼尝试" }
+        dao.deletePendingCall(attemptId)
     }
 
     suspend fun reconcilePending(): Int = withContext(Dispatchers.IO) {

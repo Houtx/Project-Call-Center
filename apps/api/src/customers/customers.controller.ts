@@ -63,7 +63,7 @@ export class CustomersController {
       'customers.create',
       key,
       body,
-      () => this.customers.create(body, request.user.sub),
+      (tx) => this.customers.create(body, request.user.sub, tx),
     );
   }
 
@@ -79,7 +79,7 @@ export class CustomersController {
       'customers.update',
       key,
       { id, ...body },
-      () => this.customers.update(id, body, request.user.sub),
+      (tx) => this.customers.update(id, body, request.user.sub, tx),
     );
   }
 
@@ -95,7 +95,7 @@ export class CustomersController {
       'customers.archive',
       key,
       { id },
-      () => this.customers.archive(id, request.user.sub),
+      (tx) => this.customers.archive(id, request.user.sub, tx),
     );
   }
 
@@ -111,7 +111,7 @@ export class CustomersController {
       'customers.archive',
       key,
       { id },
-      () => this.customers.archive(id, request.user.sub),
+      (tx) => this.customers.archive(id, request.user.sub, tx),
     );
   }
 
@@ -128,7 +128,7 @@ export class CustomersController {
       'customers.erase',
       key,
       { id, ...body },
-      () => this.customers.erasePersonalData(id, body.reason, request.user.sub),
+      (tx) => this.customers.erasePersonalData(id, body.reason, request.user.sub, tx),
     );
   }
 
@@ -153,7 +153,7 @@ export class CustomersController {
       'batches.create',
       key,
       body,
-      () => this.customers.createBatch(body, request.user.sub),
+      (tx) => this.customers.createBatch(body, request.user.sub, tx),
     );
   }
 
@@ -169,7 +169,7 @@ export class CustomersController {
       'batches.update',
       key,
       { id, ...body },
-      () => this.customers.updateBatch(id, body),
+      (tx) => this.customers.updateBatch(id, body, tx),
     );
   }
 }

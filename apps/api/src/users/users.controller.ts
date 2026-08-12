@@ -54,7 +54,7 @@ export class UsersController {
       'agents.create',
       key,
       body,
-      () => this.users.createAgent(body, req.user.sub),
+      (tx) => this.users.createAgent(body, req.user.sub, tx),
     );
   }
 
@@ -70,7 +70,7 @@ export class UsersController {
       'agents.update',
       key,
       { id, ...body },
-      () => this.users.updateAgent(id, body, req.user.sub),
+      (tx) => this.users.updateAgent(id, body, req.user.sub, tx),
     );
   }
 
@@ -87,7 +87,7 @@ export class UsersController {
       'agents.reset-password',
       key,
       { id, passwordHash: createHash('sha256').update(body.password).digest('hex') },
-      () => this.users.resetPassword(id, body.password, req.user.sub),
+      (tx) => this.users.resetPassword(id, body.password, req.user.sub, tx),
     );
   }
 
@@ -108,7 +108,7 @@ export class UsersController {
       'devices.revoke',
       key,
       { id },
-      () => this.users.revokeDevice(id, req.user.sub),
+      (tx) => this.users.revokeDevice(id, req.user.sub, tx),
     );
   }
 
@@ -124,7 +124,7 @@ export class UsersController {
       'devices.revoke',
       key,
       { id },
-      () => this.users.revokeAgentDevice(id, req.user.sub),
+      (tx) => this.users.revokeAgentDevice(id, req.user.sub, tx),
     );
   }
 
@@ -144,7 +144,7 @@ export class UsersController {
       'device-models.create',
       key,
       body,
-      () => this.users.addAllowedModel(body, req.user.sub),
+      (tx) => this.users.addAllowedModel(body, req.user.sub, tx),
     );
   }
 
@@ -160,7 +160,7 @@ export class UsersController {
       'device-models.update',
       key,
       { id, ...body },
-      () => this.users.updateAllowedModel(id, body, req.user.sub),
+      (tx) => this.users.updateAllowedModel(id, body, req.user.sub, tx),
     );
   }
 
@@ -180,7 +180,7 @@ export class UsersController {
       'mobile-app-policy.update',
       key,
       body,
-      () => this.users.updateMobileAppPolicy(body, req.user.sub),
+      (tx) => this.users.updateMobileAppPolicy(body, req.user.sub, tx),
     );
   }
 }

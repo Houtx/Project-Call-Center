@@ -210,10 +210,17 @@ class AgentViewModel(
         simCallManager.refresh()
     }
 
-    fun reportDialLaunchFailure(failure: Throwable) {
-        transient.value = transient.value.copy(
-            error = failure.message ?: "无法通过所选 SIM 卡发起外呼",
-        )
+    fun reportDialLaunchFailure(attemptId: String, failure: Throwable) {
+        viewModelScope.launch {
+            val cancelled = runCatching { repository.cancelFailedCallAttempt(attemptId) }
+            transient.value = transient.value.copy(
+                error = if (cancelled.isSuccess) {
+                    failure.message ?: "无法通过所选 SIM 卡发起外呼，本次尝试已撤销"
+                } else {
+                    "${failure.message ?: "无法发起外呼"}；服务器撤销失败，请保持网络连接并稍后重试"
+                },
+            )
+        }
     }
 
     fun logout() {

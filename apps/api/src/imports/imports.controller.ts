@@ -52,7 +52,7 @@ export class ImportsController {
         size: file?.size,
         hash: file ? createFileHash(file.buffer) : null,
       },
-      () => this.imports.preview(file, body.batchId, request.user.sub),
+      (tx) => this.imports.preview(file, body.batchId, request.user.sub, tx),
     );
   }
 
@@ -68,7 +68,7 @@ export class ImportsController {
       'customers.import.commit',
       key,
       body,
-      () => this.imports.commit(body.importId, body.duplicateMode, request.user.sub),
+      (tx) => this.imports.commit(body.importId, body.duplicateMode, request.user.sub, tx),
     );
   }
 

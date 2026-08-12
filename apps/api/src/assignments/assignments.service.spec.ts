@@ -107,10 +107,13 @@ describe('AssignmentsService', () => {
     });
     expect(assignOrReassign).toHaveBeenCalledTimes(2);
     expect(assignOrReassign.mock.calls.map(([ids]) => ids.length)).toEqual([1000, 1]);
-    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
-      action: 'CUSTOMERS_BULK_ASSIGNED',
-      metadata: expect.objectContaining({ assignableCount: 1001 }),
-    }));
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'CUSTOMERS_BULK_ASSIGNED',
+        metadata: expect.objectContaining({ assignableCount: 1001 }),
+      }),
+      prisma,
+    );
   });
 
   it('splits one stable customer range evenly across multiple target agents', async () => {
@@ -275,9 +278,10 @@ describe('AssignmentsService', () => {
       data: { status: CustomerStatus.ASSIGNED },
     });
     expect(tx.assignment.update).not.toHaveBeenCalled();
-    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
-      action: 'CUSTOMERS_RETRY_ASSIGNED',
-    }));
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'CUSTOMERS_RETRY_ASSIGNED' }),
+      prisma,
+    );
   });
 
   it('ends an active unsuccessful assignment before retrying it with another agent', async () => {

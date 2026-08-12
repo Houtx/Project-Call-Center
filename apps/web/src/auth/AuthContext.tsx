@@ -6,7 +6,7 @@ interface AuthState {
   user: User | null;
   loading: boolean;
   login: (username: string, password: string) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -33,9 +33,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(session.user);
   }, []);
 
-  const logout = useCallback(() => {
-    tokenStore.clear();
-    setUser(null);
+  const logout = useCallback(async () => {
+    const refreshToken = tokenStore.getRefresh();
+    try {
+      if (refreshToken) await api.auth.logout(refreshToken);
+    } catch {
+      // Local logout must still succeed when the server is unavailable.
+    } finally {
+      tokenStore.clear();
+      setUser(null);
+    }
   }, []);
 
   const value = useMemo(() => ({ user, loading, login, logout }), [user, loading, login, logout]);

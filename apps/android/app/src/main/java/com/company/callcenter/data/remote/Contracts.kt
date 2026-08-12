@@ -79,6 +79,7 @@ data class CallAttemptResponse(
     val collectionDeadlineAt: String,
     val attemptNumber: Int,
 )
+data class CancelCallAttemptResponse(val cancelled: Boolean)
 
 data class CallObservationBatch(val results: List<CallObservation>)
 data class CallObservation(

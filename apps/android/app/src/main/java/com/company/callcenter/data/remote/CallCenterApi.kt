@@ -13,6 +13,9 @@ interface CallCenterApi {
     @POST("auth/refresh")
     suspend fun refresh(@Body body: RefreshTokenRequest): RefreshTokenResponse
 
+    @POST("auth/logout")
+    suspend fun logout(@Body body: RefreshTokenRequest)
+
     @GET("mobile/bootstrap")
     suspend fun bootstrap(): BootstrapResponse
 
@@ -27,6 +30,9 @@ interface CallCenterApi {
 
     @POST("mobile/call-attempts")
     suspend fun createCallAttempt(@Body body: CallAttemptRequest): CallAttemptResponse
+
+    @POST("mobile/call-attempts/{attemptId}/cancel")
+    suspend fun cancelCallAttempt(@Path("attemptId") attemptId: String): CancelCallAttemptResponse
 
     @POST("mobile/call-log-results:batch")
     suspend fun uploadCallResults(@Body body: CallObservationBatch): CallObservationResult

@@ -9,6 +9,9 @@ import { RequestIdMiddleware } from './common/request-id.middleware';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  if (process.env.TRUST_PROXY === 'true') {
+    app.getHttpAdapter().getInstance().set('trust proxy', 1);
+  }
   app.enableShutdownHooks();
   app.use(helmet());
   app.enableCors({

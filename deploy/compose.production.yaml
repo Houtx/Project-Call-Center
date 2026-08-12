@@ -11,6 +11,7 @@ x-api-environment: &api-environment
   PHONE_ENCRYPTION_KEY: ${PHONE_ENCRYPTION_KEY:?set PHONE_ENCRYPTION_KEY in deploy/.env.production}
   PHONE_HASH_KEY: ${PHONE_HASH_KEY:?set PHONE_HASH_KEY in deploy/.env.production}
   WEB_ORIGIN: ${WEB_ORIGIN:?set WEB_ORIGIN in deploy/.env.production}
+  TRUST_PROXY: "true"
 
 x-api-service: &api-service
   image: ${API_IMAGE:-project-call-center-api:0.3.0}

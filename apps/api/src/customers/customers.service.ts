@@ -94,8 +94,8 @@ export class CustomersService {
     return { items: items.map((item) => this.toPublic(item)), page: query.page, pageSize: query.pageSize, total };
   }
 
-  async get(id: string) {
-    const customer = await this.prisma.customer.findUnique({
+  async get(id: string, client: PrismaService | Prisma.TransactionClient = this.prisma) {
+    const customer = await client.customer.findUnique({
       where: { id },
       select: {
         ...this.publicSelect(),
@@ -118,7 +118,11 @@ export class CustomersService {
     return { ...this.toPublic(customer), assignmentHistory: customer.assignments };
   }
 
-  async create(body: CreateCustomerDto, actorId: string) {
+  async create(
+    body: CreateCustomerDto,
+    actorId: string,
+    client: PrismaService | Prisma.TransactionClient = this.prisma,
+  ) {
     const normalized = this.crypto.normalizePhone(body.phone);
     const phoneHash = this.crypto.hashPhone(normalized);
     const province = body.province?.trim();
@@ -127,7 +131,7 @@ export class CustomersService {
     const attribution = province && city && carrier
       ? null
       : this.phoneAttribution.lookup(normalized);
-    const suppressed = await this.prisma.suppressionEntry.findFirst({
+    const suppressed = await client.suppressionEntry.findFirst({
       where: { phoneHash, revokedAt: null },
     });
     if (suppressed) {
@@ -136,7 +140,7 @@ export class CustomersService {
         detail: '该号码已进入拒呼名单',
       });
     }
-    const customer = await this.prisma.customer.create({
+    const customer = await client.customer.create({
       data: {
         name: body.name,
         ...this.crypto.encryptPhone(normalized),
@@ -158,7 +162,7 @@ export class CustomersService {
       entityType: 'customer',
       entityId: customer.id,
       metadata: { phone: customer.phoneMasked },
-    });
+    }, client);
     return this.toPublic(customer);
   }
 
@@ -167,9 +171,14 @@ export class CustomersService {
     return this.phoneAttribution.lookup(normalized) ?? {};
   }
 
-  async update(id: string, body: UpdateCustomerDto, actorId: string) {
+  async update(
+    id: string,
+    body: UpdateCustomerDto,
+    actorId: string,
+    client: PrismaService | Prisma.TransactionClient = this.prisma,
+  ) {
     const { version, ...updates } = body;
-    const result = await this.prisma.customer.updateMany({
+    const result = await client.customer.updateMany({
       where: { id, version, erasedAt: null },
       data: {
         ...updates,
@@ -178,7 +187,7 @@ export class CustomersService {
       },
     });
     if (result.count === 0) {
-      const current = await this.prisma.customer.findUnique({
+      const current = await client.customer.findUnique({
         where: { id },
         select: { erasedAt: true },
       });
@@ -197,13 +206,17 @@ export class CustomersService {
       entityType: 'customer',
       entityId: id,
       metadata: { fields: Object.keys(updates) },
-    });
-    return this.get(id);
+    }, client);
+    return this.get(id, client);
   }
 
-  async archive(id: string, actorId: string): Promise<void> {
+  async archive(
+    id: string,
+    actorId: string,
+    client?: Prisma.TransactionClient,
+  ): Promise<void> {
     const now = new Date();
-    await this.prisma.$transaction(async (tx) => {
+    const operation = async (tx: Prisma.TransactionClient) => {
       const assignments = await tx.assignment.findMany({
         where: { customerId: id, status: 'ACTIVE' },
       });
@@ -226,18 +239,25 @@ export class CustomersService {
           },
         });
       }
-    });
-    await this.audit.record({
-      actorId,
-      action: 'CUSTOMER_ARCHIVED',
-      entityType: 'customer',
-      entityId: id,
-    });
+      await this.audit.record({
+        actorId,
+        action: 'CUSTOMER_ARCHIVED',
+        entityType: 'customer',
+        entityId: id,
+      }, tx);
+    };
+    if (client) await operation(client);
+    else await this.prisma.$transaction(operation);
   }
 
-  async erasePersonalData(id: string, reason: string, actorId: string): Promise<void> {
+  async erasePersonalData(
+    id: string,
+    reason: string,
+    actorId: string,
+    client?: Prisma.TransactionClient,
+  ): Promise<void> {
     const erasedIdentity = `erased:${id}:${randomUUID()}`;
-    await this.prisma.$transaction(async (tx) => {
+    const operation = async (tx: Prisma.TransactionClient) => {
       const customer = await tx.customer.findUnique({
         where: { id },
         select: { status: true, erasedAt: true },
@@ -279,7 +299,9 @@ export class CustomersService {
         entityId: id,
         metadata: { reason },
       }, tx);
-    });
+    };
+    if (client) await operation(client);
+    else await this.prisma.$transaction(operation);
   }
 
   async revealPhone(id: string, actorId: string) {
@@ -360,8 +382,12 @@ export class CustomersService {
     };
   }
 
-  async createBatch(body: CreateBatchDto, actorId: string) {
-    const batch = await this.prisma.batch.create({
+  async createBatch(
+    body: CreateBatchDto,
+    actorId: string,
+    client: PrismaService | Prisma.TransactionClient = this.prisma,
+  ) {
+    const batch = await client.batch.create({
       data: {
         name: body.name,
         description: body.description ?? body.notes,
@@ -374,12 +400,16 @@ export class CustomersService {
       action: 'BATCH_CREATED',
       entityType: 'batch',
       entityId: batch.id,
-    });
+    }, client);
     return batch;
   }
 
-  updateBatch(id: string, body: UpdateBatchDto) {
-    return this.prisma.batch.update({
+  updateBatch(
+    id: string,
+    body: UpdateBatchDto,
+    client: PrismaService | Prisma.TransactionClient = this.prisma,
+  ) {
+    return client.batch.update({
       where: { id },
       data: {
         name: body.name,

@@ -93,6 +93,29 @@ describe('ReportsService', () => {
     ]);
   });
 
+  it('does not require an allowlisted model when compatibility checks are disabled', async () => {
+    const prisma = {
+      callAttempt: { findMany: jest.fn().mockResolvedValue([]) },
+      customer: { count: jest.fn().mockResolvedValue(0) },
+      assignment: { count: jest.fn().mockResolvedValue(0) },
+      user: { count: jest.fn().mockResolvedValue(0) },
+      device: { count: jest.fn().mockResolvedValue(1) },
+      mobileAppPolicy: {
+        findUnique: jest.fn().mockResolvedValue({
+          minimumVersionCode: 1,
+          deviceCompatibilityRequired: false,
+        }),
+      },
+    };
+    const service = new ReportsService(prisma as any, { record: jest.fn() } as any, {} as any);
+
+    await service.dashboard();
+
+    expect(prisma.device.count).toHaveBeenLastCalledWith({
+      where: expect.not.objectContaining({ allowedDeviceModel: expect.anything() }),
+    });
+  });
+
   it('reveals a call number only on demand and records the masked value in audit', async () => {
     const audit = { record: jest.fn() };
     const crypto = { decryptPhone: jest.fn().mockReturnValue('+8613800000005') };

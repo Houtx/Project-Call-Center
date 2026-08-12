@@ -77,7 +77,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           </Tooltip>
           <div className="header-right">
             <Typography.Text type="secondary" className="date-label">管理后台</Typography.Text>
-            <Dropdown menu={{ items: userMenu, onClick: ({ key }) => key === 'logout' && logout() }} placement="bottomRight">
+            <Dropdown menu={{ items: userMenu, onClick: ({ key }) => { if (key === 'logout') void logout(); } }} placement="bottomRight">
               <Button type="text" className="user-button">
                 <Space><Avatar size={30}>{user?.displayName?.slice(0, 1)}</Avatar><span>{user?.displayName}</span><ChevronDown size={14} /></Space>
               </Button>

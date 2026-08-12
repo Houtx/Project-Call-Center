@@ -53,6 +53,13 @@ class UpdateManifestParserTest {
         assertFalse(UpdatePolicy.requiresUpdate(currentVersionCode = 4, releaseVersionCode = 3))
     }
 
+    @Test
+    fun `disables update checks only for debug builds without a manifest`() {
+        assertTrue(UpdatePolicy.isCheckDisabled(debug = true, manifestUrl = ""))
+        assertFalse(UpdatePolicy.isCheckDisabled(debug = false, manifestUrl = ""))
+        assertFalse(UpdatePolicy.isCheckDisabled(debug = true, manifestUrl = "https://example.test/release.json"))
+    }
+
     private fun validManifest(versionCode: Long = 2) = """
         {
           "schemaVersion": 1,

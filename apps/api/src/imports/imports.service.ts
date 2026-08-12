@@ -50,14 +50,19 @@ export class ImportsService {
     private readonly audit: AuditService,
   ) {}
 
-  async preview(file: Express.Multer.File | undefined, batchId: string, actorId: string) {
+  async preview(
+    file: Express.Multer.File | undefined,
+    batchId: string,
+    actorId: string,
+    client: PrismaService | Prisma.TransactionClient = this.prisma,
+  ) {
     if (!file) {
       throw new BadRequestException({ code: 'IMPORT_FILE_REQUIRED', detail: '请上传 CSV 或 Excel 文件' });
     }
     if (file.size > 20 * 1024 * 1024) {
       throw new BadRequestException({ code: 'IMPORT_FILE_TOO_LARGE', detail: '导入文件不能超过 20MB' });
     }
-    const batch = await this.requireActiveBatch(batchId);
+    const batch = await this.requireActiveBatch(batchId, client);
     const parsed = await this.parseFile(file);
     if (!parsed.length) throw new BadRequestException({ code: 'IMPORT_EMPTY' });
     if (parsed.length > 100_000) {
@@ -67,8 +72,8 @@ export class ImportsService {
     const prepared = parsed.map((row) => this.prepareRow(row, batch.name));
     const hashes = prepared.flatMap((row) => row.phoneHash ? [row.phoneHash] : []);
     const [existing, suppressed] = await Promise.all([
-      this.findCustomersByHashes(hashes),
-      this.findSuppressionByHashes(hashes),
+      this.findCustomersByHashes(hashes, client),
+      this.findSuppressionByHashes(hashes, client),
     ]);
     const existingByHash = new Map(existing.map((item) => [item.phoneHash, item.id]));
     const suppressedHashes = new Set(suppressed.map((item) => item.phoneHash));
@@ -94,7 +99,7 @@ export class ImportsService {
     });
 
     const counts = this.countRows(rows);
-    const job = await this.prisma.importJob.create({
+    const job = await client.importJob.create({
       data: {
         batchId: batch.id,
         createdById: actorId,
@@ -108,7 +113,7 @@ export class ImportsService {
       },
     });
     for (let offset = 0; offset < rows.length; offset += 1000) {
-      await this.prisma.importRow.createMany({
+      await client.importRow.createMany({
         data: rows.slice(offset, offset + 1000).map((row) => ({
           importJobId: job.id,
           rowNumber: row.rowNumber,
@@ -136,7 +141,7 @@ export class ImportsService {
       entityType: 'import_job',
       entityId: job.id,
       metadata: { batchId: batch.id, fileName: job.fileName, ...counts, total: rows.length },
-    });
+    }, client);
     return {
       importId: job.id,
       fileName: job.fileName,
@@ -157,8 +162,13 @@ export class ImportsService {
     };
   }
 
-  async commit(importId: string, duplicateMode: DuplicateModeDto, actorId: string) {
-    const claimed = await this.prisma.importJob.updateMany({
+  async commit(
+    importId: string,
+    duplicateMode: DuplicateModeDto,
+    actorId: string,
+    client: PrismaService | Prisma.TransactionClient = this.prisma,
+  ) {
+    const claimed = await client.importJob.updateMany({
       where: { id: importId, status: ImportJobStatus.PREVIEWED },
       data: {
         status: ImportJobStatus.PROCESSING,
@@ -169,13 +179,13 @@ export class ImportsService {
       },
     });
     if (!claimed.count) {
-      const exists = await this.prisma.importJob.findUnique({ where: { id: importId } });
+      const exists = await client.importJob.findUnique({ where: { id: importId } });
       if (!exists) throw new NotFoundException({ code: 'IMPORT_NOT_FOUND' });
       throw new ConflictException({ code: 'IMPORT_ALREADY_COMMITTED', detail: '该导入任务已处理' });
     }
 
     try {
-      const job = await this.prisma.importJob.findUnique({
+      const job = await client.importJob.findUnique({
         where: { id: importId },
         select: { batchId: true },
       });
@@ -185,18 +195,18 @@ export class ImportsService {
           detail: '导入任务未绑定批次，请重新预检',
         });
       }
-      await this.requireActiveBatch(job.batchId);
-      const rows = await this.prisma.importRow.findMany({
+      await this.requireActiveBatch(job.batchId, client);
+      const rows = await client.importRow.findMany({
         where: { importJobId: importId },
         orderBy: { rowNumber: 'asc' },
       });
       const candidateHashes = [...new Set(rows.flatMap((row) => row.phoneHash ? [row.phoneHash] : []))];
       const suppressedHashes = new Set(
-        (await this.findSuppressionByHashes(candidateHashes)).map((item) => item.phoneHash),
+        (await this.findSuppressionByHashes(candidateHashes, client)).map((item) => item.phoneHash),
       );
       const suppressedRows = rows.filter((row) => row.phoneHash && suppressedHashes.has(row.phoneHash));
       for (let offset = 0; offset < suppressedRows.length; offset += 5000) {
-        await this.prisma.importRow.updateMany({
+        await client.importRow.updateMany({
           where: { id: { in: suppressedRows.slice(offset, offset + 5000).map((row) => row.id) } },
           data: { status: ImportRowStatus.SUPPRESSED, issues: ['提交时号码已进入拒呼名单'] },
         });
@@ -210,7 +220,7 @@ export class ImportsService {
         return row.status !== ImportRowStatus.INVALID && row.status !== ImportRowStatus.SUPPRESSED;
       });
       const existingByHash = new Map(
-        (await this.findCustomersByHashes(eligibleRows.map((row) => row.phoneHash!)))
+        (await this.findCustomersByHashes(eligibleRows.map((row) => row.phoneHash!), client))
           .map((item) => [item.phoneHash, item.id]),
       );
       const rowsToCreate = eligibleRows.filter((row) => !existingByHash.has(row.phoneHash!));
@@ -222,7 +232,7 @@ export class ImportsService {
       let updated = 0;
       for (let offset = 0; offset < rowsToCreate.length; offset += 1000) {
         const chunk = rowsToCreate.slice(offset, offset + 1000);
-        const result = await this.prisma.customer.createMany({
+        const result = await client.customer.createMany({
           data: chunk.map((row) => ({
             createdById: actorId,
             batchId: job.batchId!,
@@ -243,14 +253,14 @@ export class ImportsService {
         });
         created += result.count;
       }
-      await this.linkImportedRows(importId, rowsToCreate.map((row) => row.id));
+      await this.linkImportedRows(importId, rowsToCreate.map((row) => row.id), client);
 
       for (let offset = 0; offset < rowsToUpdate.length; offset += 250) {
         const chunk = rowsToUpdate.slice(offset, offset + 250);
-        await this.prisma.$transaction(chunk.flatMap((row) => {
+        await Promise.all(chunk.flatMap((row) => {
           const customerId = existingByHash.get(row.phoneHash!)!;
           return [
-            this.prisma.customer.update({
+            client.customer.update({
               where: { id: customerId },
               data: {
                 name: row.name ?? undefined,
@@ -263,7 +273,7 @@ export class ImportsService {
                 version: { increment: 1 },
               },
             }),
-            this.prisma.importRow.update({
+            client.importRow.update({
               where: { id: row.id },
               data: { status: ImportRowStatus.IMPORTED, createdCustomerId: customerId },
             }),
@@ -272,7 +282,7 @@ export class ImportsService {
         updated += chunk.length;
       }
       const skipped = rows.length - created - updated;
-      await this.prisma.importJob.update({
+      await client.importJob.update({
         where: { id: importId },
         data: {
           status: ImportJobStatus.COMPLETED,
@@ -287,10 +297,10 @@ export class ImportsService {
         entityType: 'import_job',
         entityId: importId,
         metadata: { batchId: job.batchId, created, updated, skipped, duplicateMode },
-      });
+      }, client);
       return { created, updated, skipped };
     } catch (error) {
-      await this.prisma.importJob.update({
+      await client.importJob.update({
         where: { id: importId },
         data: {
           status: ImportJobStatus.FAILED,
@@ -449,10 +459,13 @@ export class ImportsService {
     }
   }
 
-  private async findCustomersByHashes(hashes: string[]) {
+  private async findCustomersByHashes(
+    hashes: string[],
+    client: PrismaService | Prisma.TransactionClient = this.prisma,
+  ) {
     const items: { id: string; phoneHash: string }[] = [];
     for (let offset = 0; offset < hashes.length; offset += 5000) {
-      items.push(...await this.prisma.customer.findMany({
+      items.push(...await client.customer.findMany({
         where: { phoneHash: { in: hashes.slice(offset, offset + 5000) } },
         select: { id: true, phoneHash: true },
       }));
@@ -460,10 +473,13 @@ export class ImportsService {
     return items;
   }
 
-  private async findSuppressionByHashes(hashes: string[]) {
+  private async findSuppressionByHashes(
+    hashes: string[],
+    client: PrismaService | Prisma.TransactionClient = this.prisma,
+  ) {
     const items: { phoneHash: string }[] = [];
     for (let offset = 0; offset < hashes.length; offset += 5000) {
-      items.push(...await this.prisma.suppressionEntry.findMany({
+      items.push(...await client.suppressionEntry.findMany({
         where: { phoneHash: { in: hashes.slice(offset, offset + 5000) }, revokedAt: null },
         select: { phoneHash: true },
       }));
@@ -471,11 +487,15 @@ export class ImportsService {
     return items;
   }
 
-  private async linkImportedRows(importId: string, rowIds: string[]): Promise<void> {
+  private async linkImportedRows(
+    importId: string,
+    rowIds: string[],
+    client: PrismaService | Prisma.TransactionClient = this.prisma,
+  ): Promise<void> {
     for (let offset = 0; offset < rowIds.length; offset += 5000) {
       const ids = rowIds.slice(offset, offset + 5000);
       if (!ids.length) continue;
-      await this.prisma.$executeRaw(Prisma.sql`
+      await client.$executeRaw(Prisma.sql`
         UPDATE "import_rows" AS r
         SET
           "status" = ${ImportRowStatus.IMPORTED}::"ImportRowStatus",
@@ -498,8 +518,11 @@ export class ImportsService {
     };
   }
 
-  private async requireActiveBatch(batchId: string) {
-    const batch = await this.prisma.batch.findFirst({
+  private async requireActiveBatch(
+    batchId: string,
+    client: PrismaService | Prisma.TransactionClient = this.prisma,
+  ) {
+    const batch = await client.batch.findFirst({
       where: { id: batchId, status: BatchStatus.ACTIVE },
       select: { id: true, name: true, code: true },
     });

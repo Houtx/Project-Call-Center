@@ -141,9 +141,12 @@ describe('ImportsService file parsing', () => {
     expect(prisma.customer.createMany).toHaveBeenCalledWith(expect.objectContaining({
       data: [expect.objectContaining({ batchId: 'batch-1', name: '张三' })],
     }));
-    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
-      action: 'CUSTOMER_IMPORT_COMMITTED',
-      metadata: expect.objectContaining({ batchId: 'batch-1' }),
-    }));
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'CUSTOMER_IMPORT_COMMITTED',
+        metadata: expect.objectContaining({ batchId: 'batch-1' }),
+      }),
+      prisma,
+    );
   });
 });

@@ -26,49 +26,59 @@ export class IdempotencyService {
     scope: string,
     key: string | undefined,
     payload: unknown,
-    operation: () => Promise<T>,
+    operation: (client: Prisma.TransactionClient) => Promise<T>,
   ): Promise<T> {
     const resolvedKey = this.requireKey(key);
     const requestHash = createHash('sha256')
       .update(this.stableJson(payload))
       .digest('hex');
     const where = { actorId: subjectId, scope, key: resolvedKey };
-    const existing = await this.prisma.idempotencyRecord.findFirst({ where });
-    if (existing) return this.replay<T>(existing, requestHash);
+    for (let attempt = 1; attempt <= MAX_TRANSACTION_ATTEMPTS; attempt += 1) {
+      try {
+        return await this.prisma.$transaction(async (tx) => {
+        const existing = await tx.idempotencyRecord.findFirst({ where });
+        if (existing) return this.replay<T>(existing, requestHash);
 
-    try {
-      await this.prisma.idempotencyRecord.create({
-        data: {
-          ...where,
-          requestHash,
-          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-        },
-      });
-    } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
-        const concurrent = await this.prisma.idempotencyRecord.findFirstOrThrow({ where });
-        return this.replay<T>(concurrent, requestHash);
+        await tx.idempotencyRecord.create({
+          data: {
+            ...where,
+            requestHash,
+            expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+          },
+        });
+        const result = await operation(tx);
+        await tx.idempotencyRecord.update({
+          where: { actorId_scope_key: where },
+          data: {
+            responseBody: JSON.parse(JSON.stringify(result ?? { ok: true })),
+            responseCode: 200,
+            status: 'COMPLETED',
+          },
+        });
+        return result;
+        }, {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          maxWait: 10_000,
+          timeout: 10 * 60 * 1000,
+        });
+      } catch (error) {
+        if (error instanceof Prisma.PrismaClientKnownRequestError) {
+          if (error.code === 'P2002') {
+            const concurrent = await this.prisma.idempotencyRecord.findFirst({ where });
+            if (concurrent) return this.replay<T>(concurrent, requestHash);
+          }
+          if (error.code === 'P2034') {
+            if (attempt < MAX_TRANSACTION_ATTEMPTS) continue;
+            throw new ConflictException({
+              code: 'CONCURRENT_WRITE_CONFLICT',
+              detail: '数据正被其他请求修改，请稍后重试',
+            });
+          }
+        }
+        throw error;
       }
-      throw error;
     }
-
-    try {
-      const result = await operation();
-      await this.prisma.idempotencyRecord.updateMany({
-        where,
-        data: {
-          responseBody: JSON.parse(JSON.stringify(result ?? { ok: true })),
-          responseCode: 200,
-          status: 'COMPLETED',
-        },
-      });
-      return result;
-    } catch (error) {
-      await this.prisma.idempotencyRecord.deleteMany({
-        where: { ...where, responseBody: { equals: Prisma.DbNull } },
-      });
-      throw error;
-    }
+    throw new ConflictException({ code: 'CONCURRENT_WRITE_CONFLICT' });
   }
 
   private replay<T>(
@@ -101,3 +111,5 @@ export class IdempotencyService {
     return JSON.stringify(value);
   }
 }
+
+const MAX_TRANSACTION_ATTEMPTS = 3;

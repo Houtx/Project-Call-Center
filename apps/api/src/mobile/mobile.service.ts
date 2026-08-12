@@ -227,6 +227,45 @@ export class MobileService {
     return this.attemptResponse(attempt, attempt.customer);
   }
 
+  async cancelCallAttempt(attemptId: string, principal: AuthPrincipal) {
+    const device = await this.requireDevice(principal, false, false);
+    await this.prisma.$transaction(
+      async (tx) => {
+        const attempt = await tx.callAttempt.findFirst({
+          where: {
+            id: attemptId,
+            agentId: principal.sub,
+            deviceId: device.id,
+          },
+          include: { result: true },
+        });
+        if (!attempt) {
+          return;
+        }
+        if (attempt.status !== AttemptStatus.COLLECTING || attempt.result) {
+          throw new ConflictException({
+            code: 'CALL_ATTEMPT_NOT_CANCELLABLE',
+            detail: '该外呼尝试已经产生结果，不能撤销',
+          });
+        }
+        await tx.callAttempt.delete({ where: { id: attempt.id } });
+        await this.audit.record({
+          actorId: principal.sub,
+          action: 'MOBILE_CALL_ATTEMPT_CANCELLED',
+          entityType: 'call_attempt',
+          entityId: attempt.id,
+          metadata: {
+            deviceId: device.id,
+            assignmentId: attempt.assignmentId,
+            reason: 'DIAL_LAUNCH_FAILED',
+          },
+        }, tx);
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
+    return { cancelled: true };
+  }
+
   async observeCalls(body: CallObservationBatchDto, principal: AuthPrincipal) {
     const device = await this.requireDevice(principal, false, false);
     let accepted = 0;

@@ -3,9 +3,11 @@ package com.company.callcenter.worker
 import android.content.Context
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import com.company.callcenter.BuildConfig
 import com.company.callcenter.CallCenterApplication
 import com.company.callcenter.update.AppUpdateManager
 import com.company.callcenter.update.UpdateCheckResult
+import com.company.callcenter.update.UpdatePolicy
 import kotlinx.coroutines.CancellationException
 
 class CallObservationWorker(
@@ -14,7 +16,13 @@ class CallObservationWorker(
 ) : CoroutineWorker(appContext, workerParams) {
     override suspend fun doWork(): Result {
         return try {
-            if (AppUpdateManager(applicationContext).checkForUpdate() != UpdateCheckResult.UpToDate) {
+            val updateCheckDisabled = UpdatePolicy.isCheckDisabled(
+                BuildConfig.DEBUG,
+                BuildConfig.UPDATE_MANIFEST_URL,
+            )
+            if (!updateCheckDisabled &&
+                AppUpdateManager(applicationContext).checkForUpdate() != UpdateCheckResult.UpToDate
+            ) {
                 return Result.success()
             }
             val repository = (applicationContext as CallCenterApplication).container.repository

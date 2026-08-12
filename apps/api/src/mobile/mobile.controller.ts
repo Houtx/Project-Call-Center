@@ -60,6 +60,16 @@ export class MobileController {
 
   @ApiBearerAuth()
   @Roles(Role.AGENT)
+  @Post('call-attempts/:attemptId/cancel')
+  cancelAttempt(
+    @Param('attemptId') attemptId: string,
+    @Req() request: RequestWithPrincipal,
+  ) {
+    return this.mobile.cancelCallAttempt(attemptId, request.user);
+  }
+
+  @ApiBearerAuth()
+  @Roles(Role.AGENT)
   @Post('call-log-results:batch')
   uploadResults(
     @Body() body: CallObservationBatchDto,

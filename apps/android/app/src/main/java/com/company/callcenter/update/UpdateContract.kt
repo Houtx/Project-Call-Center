@@ -45,6 +45,9 @@ class AppUpdateException(
 ) : Exception(message, cause)
 
 object UpdatePolicy {
+    fun isCheckDisabled(debug: Boolean, manifestUrl: String): Boolean =
+        debug && manifestUrl.isBlank()
+
     fun requiresUpdate(currentVersionCode: Long, releaseVersionCode: Long): Boolean {
         require(currentVersionCode > 0) { "Current version code must be positive" }
         require(releaseVersionCode > 0) { "Release version code must be positive" }

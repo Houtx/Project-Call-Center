@@ -244,6 +244,8 @@ export const api = {
     login: (username: string, password: string) =>
       request<Session>('/auth/login', { method: 'POST', body: { username, password }, idempotencyKey: idempotencyKey() }),
     me: () => request<User>('/auth/me'),
+    logout: (refreshToken: string) =>
+      request<void>('/auth/logout', { method: 'POST', body: { refreshToken } }),
   },
   dashboard: {
     stats: () => request<DashboardStats>('/dashboard/stats'),

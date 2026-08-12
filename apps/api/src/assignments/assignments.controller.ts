@@ -36,11 +36,13 @@ export class AssignmentsController {
       'assignments.assign-selected',
       key,
       body,
-      async () => ({
+      async (tx) => ({
         assigned: await this.assignments.assignOrReassign(
           body.customerIds,
           body.agentId,
           request.user.sub,
+          true,
+          tx,
         ),
       }),
     );
@@ -57,8 +59,8 @@ export class AssignmentsController {
       'assignments.withdraw-selected',
       key,
       body,
-      async () => ({
-        withdrawn: await this.assignments.reclaimCustomers(body.customerIds, request.user.sub),
+      async (tx) => ({
+        withdrawn: await this.assignments.reclaimCustomers(body.customerIds, request.user.sub, tx),
       }),
     );
   }
@@ -74,11 +76,13 @@ export class AssignmentsController {
       'assignments.retry',
       key,
       body,
-      async () => ({
+      async (tx) => ({
         assigned: await this.assignments.retryAssign(
           body.customerIds,
           body.agentId,
           request.user.sub,
+          true,
+          tx,
         ),
       }),
     );
@@ -100,7 +104,7 @@ export class AssignmentsController {
       'assignments.bulk',
       key,
       body,
-      () => this.assignments.bulkAssign(body, request.user.sub),
+      (tx) => this.assignments.bulkAssign(body, request.user.sub, tx),
     );
   }
 
@@ -115,7 +119,7 @@ export class AssignmentsController {
       'assignments.assign',
       key,
       body,
-      () => this.assignments.assign(body.customerIds, body.agentId, request.user.sub),
+      (tx) => this.assignments.assign(body.customerIds, body.agentId, request.user.sub, tx),
     );
   }
 
@@ -130,7 +134,7 @@ export class AssignmentsController {
       'assignments.reclaim',
       key,
       body,
-      () => this.assignments.reclaim(body.assignmentIds, request.user.sub, body.reason),
+      (tx) => this.assignments.reclaim(body.assignmentIds, request.user.sub, body.reason, tx),
     );
   }
 
@@ -145,12 +149,13 @@ export class AssignmentsController {
       'assignments.reassign',
       key,
       body,
-      () =>
+      (tx) =>
         this.assignments.reassign(
           body.assignmentIds,
           body.agentId,
           request.user.sub,
           body.reason,
+          tx,
         ),
     );
   }

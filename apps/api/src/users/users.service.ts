@@ -83,8 +83,12 @@ export class UsersService {
     };
   }
 
-  async createAgent(body: CreateAgentDto, actorId: string) {
-    const agent = await this.prisma.user.create({
+  async createAgent(
+    body: CreateAgentDto,
+    actorId: string,
+    client: PrismaService | Prisma.TransactionClient = this.prisma,
+  ) {
+    const agent = await client.user.create({
       data: {
         username: body.username.trim().toLowerCase(),
         displayName: body.displayName,
@@ -105,18 +109,23 @@ export class UsersService {
       action: 'AGENT_CREATED',
       entityType: 'user',
       entityId: agent.id,
-    });
+    }, client);
     return agent;
   }
 
-  async updateAgent(id: string, body: UpdateAgentDto, actorId: string) {
+  async updateAgent(
+    id: string,
+    body: UpdateAgentDto,
+    actorId: string,
+    client: PrismaService | Prisma.TransactionClient = this.prisma,
+  ) {
     const active = body.active ?? body.enabled;
     const status = active === undefined
       ? undefined
       : active
         ? UserStatus.ACTIVE
         : UserStatus.DISABLED;
-    const agent = await this.prisma.user.update({
+    const agent = await client.user.update({
       where: { id, role: Role.AGENT },
       data: {
         displayName: body.displayName,
@@ -128,12 +137,12 @@ export class UsersService {
       select: { id: true, username: true, displayName: true, status: true },
     });
     if (status === UserStatus.DISABLED) {
-      await this.prisma.$transaction([
-        this.prisma.device.updateMany({
+      await Promise.all([
+        client.device.updateMany({
           where: { userId: id, status: DeviceStatus.ACTIVE },
           data: { status: DeviceStatus.REVOKED, revokedAt: new Date() },
         }),
-        this.prisma.refreshToken.updateMany({
+        client.refreshToken.updateMany({
           where: { userId: id, revokedAt: null },
           data: { revokedAt: new Date() },
         }),
@@ -145,12 +154,17 @@ export class UsersService {
       entityType: 'user',
       entityId: id,
       metadata: { status, displayNameChanged: body.displayName !== undefined },
-    });
+    }, client);
     return agent;
   }
 
-  async resetPassword(id: string, password: string, actorId: string): Promise<void> {
-    const result = await this.prisma.user.updateMany({
+  async resetPassword(
+    id: string,
+    password: string,
+    actorId: string,
+    client: PrismaService | Prisma.TransactionClient = this.prisma,
+  ): Promise<void> {
+    const result = await client.user.updateMany({
       where: { id, role: Role.AGENT },
       data: {
         passwordHash: await argon2.hash(password, { type: argon2.argon2id }),
@@ -158,7 +172,7 @@ export class UsersService {
       },
     });
     if (!result.count) throw new NotFoundException({ code: 'AGENT_NOT_FOUND' });
-    await this.prisma.refreshToken.updateMany({
+    await client.refreshToken.updateMany({
       where: { userId: id, revokedAt: null },
       data: { revokedAt: new Date() },
     });
@@ -167,7 +181,7 @@ export class UsersService {
       action: 'AGENT_PASSWORD_RESET',
       entityType: 'user',
       entityId: id,
-    });
+    }, client);
   }
 
   async listDevices() {
@@ -200,12 +214,16 @@ export class UsersService {
     }));
   }
 
-  async revokeDevice(id: string, actorId: string): Promise<void> {
-    const device = await this.prisma.device.update({
+  async revokeDevice(
+    id: string,
+    actorId: string,
+    client: PrismaService | Prisma.TransactionClient = this.prisma,
+  ): Promise<void> {
+    const device = await client.device.update({
       where: { id },
       data: { status: DeviceStatus.REVOKED, revokedAt: new Date() },
     });
-    await this.prisma.refreshToken.updateMany({
+    await client.refreshToken.updateMany({
       where: { deviceId: id, revokedAt: null },
       data: { revokedAt: new Date() },
     });
@@ -215,18 +233,22 @@ export class UsersService {
       entityType: 'device',
       entityId: id,
       metadata: { agentId: device.userId },
-    });
+    }, client);
   }
 
-  async revokeAgentDevice(deviceOrAgentId: string, actorId: string): Promise<void> {
-    const device = await this.prisma.device.findFirst({
+  async revokeAgentDevice(
+    deviceOrAgentId: string,
+    actorId: string,
+    client: PrismaService | Prisma.TransactionClient = this.prisma,
+  ): Promise<void> {
+    const device = await client.device.findFirst({
       where: {
         status: DeviceStatus.ACTIVE,
         OR: [{ id: deviceOrAgentId }, { userId: deviceOrAgentId }],
       },
     });
     if (!device) throw new NotFoundException({ code: 'ACTIVE_DEVICE_NOT_FOUND' });
-    await this.revokeDevice(device.id, actorId);
+    await this.revokeDevice(device.id, actorId, client);
   }
 
   listAllowedModels() {
@@ -235,8 +257,12 @@ export class UsersService {
     });
   }
 
-  async addAllowedModel(body: AllowedDeviceModelDto, actorId: string) {
-    const item = await this.prisma.allowedDeviceModel.upsert({
+  async addAllowedModel(
+    body: AllowedDeviceModelDto,
+    actorId: string,
+    client: PrismaService | Prisma.TransactionClient = this.prisma,
+  ) {
+    const item = await client.allowedDeviceModel.upsert({
       where: {
         manufacturer_model_androidSdk: {
           manufacturer: body.manufacturer,
@@ -253,12 +279,17 @@ export class UsersService {
       entityType: 'allowed_device_model',
       entityId: item.id,
       metadata: { manufacturer: body.manufacturer, model: body.model, androidSdk: body.androidSdk },
-    });
+    }, client);
     return item;
   }
 
-  async updateAllowedModel(id: string, body: UpdateAllowedDeviceModelDto, actorId: string) {
-    const item = await this.prisma.allowedDeviceModel.update({
+  async updateAllowedModel(
+    id: string,
+    body: UpdateAllowedDeviceModelDto,
+    actorId: string,
+    client: PrismaService | Prisma.TransactionClient = this.prisma,
+  ) {
+    const item = await client.allowedDeviceModel.update({
       where: { id },
       data: body,
     });
@@ -268,7 +299,7 @@ export class UsersService {
       entityType: 'allowed_device_model',
       entityId: item.id,
       metadata: { enabled: item.enabled, notesChanged: body.notes !== undefined },
-    });
+    }, client);
     return item;
   }
 
@@ -280,14 +311,18 @@ export class UsersService {
     });
   }
 
-  async updateMobileAppPolicy(body: UpdateMobileAppPolicyDto, actorId: string) {
+  async updateMobileAppPolicy(
+    body: UpdateMobileAppPolicyDto,
+    actorId: string,
+    client?: Prisma.TransactionClient,
+  ) {
     if (body.latestVersionCode < body.minimumVersionCode) {
       throw new BadRequestException({
         code: 'INVALID_APP_VERSION_POLICY',
         detail: '最新版本号不能低于最低版本号',
       });
     }
-    const { policy, closedAssignments } = await this.prisma.$transaction(async (tx) => {
+    const operation = async (tx: Prisma.TransactionClient) => {
       const policy = await tx.mobileAppPolicy.upsert({
         where: { id: 'android' },
         create: { id: 'android', ...body, downloadUrl: body.downloadUrl || null },
@@ -333,21 +368,25 @@ export class UsersService {
           })),
         });
       }
-      return { policy, closedAssignments: exhausted.length };
-    });
-    await this.audit.record({
-      actorId,
-      action: 'MOBILE_APP_POLICY_UPDATED',
-      entityType: 'mobile_app_policy',
-      entityId: policy.id,
-      metadata: {
-        minimumVersionCode: policy.minimumVersionCode,
-        latestVersionCode: policy.latestVersionCode,
-        forceUpgrade: policy.forceUpgrade,
-        maxCallAttempts: policy.maxCallAttempts,
-        closedAssignments,
-      },
-    });
+      const result = { policy, closedAssignments: exhausted.length };
+      await this.audit.record({
+        actorId,
+        action: 'MOBILE_APP_POLICY_UPDATED',
+        entityType: 'mobile_app_policy',
+        entityId: policy.id,
+        metadata: {
+          minimumVersionCode: policy.minimumVersionCode,
+          latestVersionCode: policy.latestVersionCode,
+          forceUpgrade: policy.forceUpgrade,
+          maxCallAttempts: policy.maxCallAttempts,
+          closedAssignments: result.closedAssignments,
+        },
+      }, tx);
+      return result;
+    };
+    const { policy } = client
+      ? await operation(client)
+      : await this.prisma.$transaction(operation);
     return policy;
   }
 

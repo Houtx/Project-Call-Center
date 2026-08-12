@@ -190,6 +190,7 @@ model Customer {
   notes           String?        @db.Text
   tags            String[]       @default([])
   status          CustomerStatus @default(AVAILABLE)
+  suppressionPreviousStatus CustomerStatus?
   version         Int            @default(1)
   lastContactAt   DateTime?      @db.Timestamptz(3)
   archivedAt      DateTime?      @db.Timestamptz(3)

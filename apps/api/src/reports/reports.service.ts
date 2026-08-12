@@ -85,7 +85,9 @@ export class ReportsService {
         callLogPermission: PermissionState.GRANTED,
         lastHealthAt: { gte: new Date(Date.now() - 5 * 60 * 1000) },
         appVersionCode: { gte: policy?.minimumVersionCode ?? 1 },
-        allowedDeviceModel: { enabled: true },
+        ...(policy?.deviceCompatibilityRequired !== false
+          ? { allowedDeviceModel: { enabled: true } }
+          : {}),
       },
     });
     return {

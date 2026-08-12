@@ -45,7 +45,7 @@ export class SuppressionController {
       'suppression.add',
       key,
       body,
-      () => this.suppression.add(body, request.user.sub),
+      (tx) => this.suppression.add(body, request.user.sub, tx),
     );
   }
 
@@ -61,7 +61,7 @@ export class SuppressionController {
       'suppression.revoke',
       key,
       { id },
-      () => this.suppression.revoke(id, request.user.sub),
+      (tx) => this.suppression.revoke(id, request.user.sub, tx),
     );
   }
 
@@ -77,7 +77,7 @@ export class SuppressionController {
       'suppression.revoke',
       key,
       { id },
-      () => this.suppression.revoke(id, request.user.sub),
+      (tx) => this.suppression.revoke(id, request.user.sub, tx),
     );
   }
 }

@@ -137,4 +137,15 @@ describe('typed API boundary', () => {
       .toBe('Bearer new-access');
     expect(tokenStore.getRefresh()).toBe('new-refresh');
   });
+
+  it('revokes the refresh token when logging out', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.auth.logout('refresh-token');
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/auth/logout');
+    expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body)))
+      .toEqual({ refreshToken: 'refresh-token' });
+  });
 });

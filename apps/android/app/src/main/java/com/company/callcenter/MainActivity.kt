@@ -25,6 +25,7 @@ import com.company.callcenter.update.StartupUpdateState
 import com.company.callcenter.update.UpdateCheckResult
 import com.company.callcenter.update.UpdateFailureReason
 import com.company.callcenter.update.UpdateGateScreen
+import com.company.callcenter.update.UpdatePolicy
 import com.company.callcenter.update.VerifiedApk
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
@@ -102,7 +103,7 @@ class MainActivity : ComponentActivity() {
 
     private fun beginUpdateCheck() {
         if (updateJob?.isActive == true) return
-        if (BuildConfig.DEBUG && BuildConfig.UPDATE_MANIFEST_URL.isBlank()) {
+        if (UpdatePolicy.isCheckDisabled(BuildConfig.DEBUG, BuildConfig.UPDATE_MANIFEST_URL)) {
             // Open-source Debug builds have no organization-specific release feed.
             // A Release build is rejected by Gradle unless the feed is configured.
             unlockApplication()
@@ -176,7 +177,9 @@ class MainActivity : ComponentActivity() {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.dialEvents.collect { authorization ->
                     runCatching { appContainer.simCallManager.placeCall(authorization.phone) }
-                        .onFailure(viewModel::reportDialLaunchFailure)
+                        .onFailure { failure ->
+                            viewModel.reportDialLaunchFailure(authorization.attemptId, failure)
+                        }
                 }
             }
         }
