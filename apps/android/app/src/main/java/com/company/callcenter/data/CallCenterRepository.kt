@@ -312,6 +312,9 @@ class CallCenterRepository(
     }
 
     suspend fun startRecording(attemptId: String): Boolean = withContext(Dispatchers.IO) {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            return@withContext false
+        }
         runCatching {
             val started = callRecorder.start(attemptId)
             dao.setRecordingPath(attemptId, started.file.absolutePath, started.startedAt)
@@ -381,7 +384,8 @@ class CallCenterRepository(
 
     suspend fun reconcilePending(): Int = withContext(Dispatchers.IO) {
         val synced = serverConfigurationMutex.withLock {
-            if (!callLogReader.hasPermission() || session.accessToken == null) return@withLock 0
+            if (session.accessToken == null) return@withLock 0
+            val canReadCallLog = callLogReader.hasPermission()
             var completed = 0
             dao.pendingCalls().forEach { pending ->
                 dao.markPendingTried(pending.attemptId, System.currentTimeMillis())
@@ -390,6 +394,7 @@ class CallCenterRepository(
                     if (recordingSettled) dao.deletePendingCall(pending.attemptId)
                     return@forEach
                 }
+                if (!canReadCallLog) return@forEach
                 val phone = runCatching { session.decryptPhone(pending.encryptedPhone) }.getOrNull()
                     ?: return@forEach
                 val matched = callLogReader.findOutgoing(phone, pending.callLogBaselineId, pending.initiatedAt)

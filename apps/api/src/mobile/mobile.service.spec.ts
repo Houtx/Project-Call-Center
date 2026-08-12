@@ -2,6 +2,58 @@ import { AssignmentStatus, AttemptStatus, CustomerStatus } from '@prisma/client'
 import { MobileService } from './mobile.service';
 
 describe('MobileService call completion', () => {
+  it('snapshots the agent recording switch when creating a new attempt', async () => {
+    const customer = {
+      id: 'customer-1',
+      phoneCiphertext: new Uint8Array([1]),
+      phoneIv: new Uint8Array([2]),
+      phoneTag: new Uint8Array([3]),
+      phoneHash: 'hash-1',
+      phoneMasked: '138****0001',
+      status: CustomerStatus.ASSIGNED,
+    };
+    const created = {
+      id: 'attempt-1',
+      assignmentId: 'assignment-1',
+      customerId: 'customer-1',
+      agentId: 'agent-1',
+      deviceId: 'device-1',
+      attemptNumber: 1,
+      recordingRequested: true,
+      dialTokenExpiresAt: new Date(Date.now() + 60_000),
+      collectingDeadlineAt: new Date(Date.now() + 86_400_000),
+      customer,
+    };
+    const tx = {
+      assignment: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'assignment-1', customerId: 'customer-1', agentId: 'agent-1', status: AssignmentStatus.ACTIVE, customer }),
+      },
+      suppressionEntry: { count: jest.fn().mockResolvedValue(0) },
+      mobileAppPolicy: { upsert: jest.fn().mockResolvedValue({ maxCallAttempts: 2 }) },
+      user: { findUnique: jest.fn().mockResolvedValue({ recordingEnabled: true }) },
+      callAttempt: {
+        findMany: jest.fn().mockResolvedValue([]),
+        create: jest.fn().mockResolvedValue(created),
+      },
+    };
+    const prisma = {
+      callAttempt: { findUnique: jest.fn().mockResolvedValue(null) },
+      $transaction: jest.fn(async (operation: (client: typeof tx) => unknown) => operation(tx)),
+    };
+    const recordings = { createPending: jest.fn().mockResolvedValue({ id: 'recording-1' }) };
+    const service = new MobileService(prisma as any, { decryptPhone: jest.fn().mockReturnValue('+8613800000001') } as any, { record: jest.fn() } as any, recordings as any);
+    jest.spyOn(service as any, 'requireDevice').mockResolvedValue({ id: 'device-1' });
+
+    await expect(service.createCallAttempt({
+      assignmentId: 'assignment-1',
+      clientAttemptId: 'client-attempt-1',
+      callLogBaselineId: '0',
+      callLogBaselineAt: new Date().toISOString(),
+    }, { sub: 'agent-1', role: 'AGENT', deviceId: 'device-1', tokenVersion: 1 } as any)).resolves.toMatchObject({ recordingRequested: true });
+    expect(tx.callAttempt.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ recordingRequested: true }) }));
+    expect(recordings.createPending).toHaveBeenCalledWith('attempt-1', 'agent-1', 'device-1', tx);
+  });
+
   it('completes the assignment after the configured second zero-duration call', async () => {
     const attempt = {
       id: 'attempt-2',

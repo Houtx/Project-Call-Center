@@ -42,6 +42,7 @@ class MainActivity : ComponentActivity() {
     }
     private var updateJob: Job? = null
     private var dialCollectorStarted = false
+    private var pendingRecordingAuthorization: com.company.callcenter.data.DialAuthorization? = null
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -57,6 +58,16 @@ class MainActivity : ComponentActivity() {
         val current = updateState.value
         if (current is StartupUpdateState.PermissionRequired) {
             updateState.value = current
+        }
+    }
+
+    private val recordingPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        val authorization = pendingRecordingAuthorization ?: return@registerForActivityResult
+        pendingRecordingAuthorization = null
+        lifecycleScope.launch {
+            continueDial(authorization, granted)
         }
     }
 
@@ -76,7 +87,6 @@ class MainActivity : ComponentActivity() {
                                     Manifest.permission.CALL_PHONE,
                                     Manifest.permission.READ_CALL_LOG,
                                     Manifest.permission.READ_PHONE_STATE,
-                                    Manifest.permission.RECORD_AUDIO,
                                 ),
                             )
                         },
@@ -177,17 +187,36 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.dialEvents.collect { authorization ->
-                    if (authorization.recordingRequested && !appContainer.repository.startRecording(authorization.attemptId)) {
-                        appContainer.repository.markRecordingUnsupported(authorization.attemptId, "VOICE_CALL_SOURCE_REJECTED")
+                    if (authorization.recordingRequested &&
+                        ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
+                    ) {
+                        pendingRecordingAuthorization = authorization
+                        recordingPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    } else {
+                        continueDial(authorization, granted = true)
                     }
-                    runCatching { appContainer.simCallManager.placeCall(authorization.phone) }
-                        .onFailure { failure ->
-                            appContainer.repository.discardRecording()
-                            viewModel.reportDialLaunchFailure(authorization.attemptId, failure)
-                        }
                 }
             }
         }
+    }
+
+    private suspend fun continueDial(
+        authorization: com.company.callcenter.data.DialAuthorization,
+        granted: Boolean,
+    ) {
+        if (authorization.recordingRequested &&
+            (!granted || !appContainer.repository.startRecording(authorization.attemptId))
+        ) {
+            appContainer.repository.markRecordingUnsupported(
+                authorization.attemptId,
+                if (granted) "VOICE_CALL_SOURCE_REJECTED" else "RECORD_AUDIO_PERMISSION_DENIED",
+            )
+        }
+        runCatching { appContainer.simCallManager.placeCall(authorization.phone) }
+            .onFailure { failure ->
+                appContainer.repository.discardRecording()
+                viewModel.reportDialLaunchFailure(authorization.attemptId, failure)
+            }
     }
 
     private fun Throwable.toUpdateMessage(): String = when ((this as? AppUpdateException)?.reason) {

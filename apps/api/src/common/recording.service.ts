@@ -146,6 +146,16 @@ export class RecordingService {
       await this.prisma.callRecording.update({ where: { id: recording.id }, data: { status: CallRecordingStatus.FAILED, failureCode: 'FILE_MISSING' } }).catch(() => undefined);
       throw new NotFoundException({ code: 'CALL_RECORDING_FILE_MISSING' });
     }
+    let plaintext: Buffer;
+    try {
+      plaintext = this.decrypt(encrypted);
+    } catch {
+      await this.prisma.callRecording.update({
+        where: { id: recording.id },
+        data: { status: CallRecordingStatus.FAILED, failureCode: 'FILE_INVALID' },
+      }).catch(() => undefined);
+      throw new ConflictException({ code: 'RECORDING_FILE_INVALID' });
+    }
     await this.audit.record({
       actorId,
       action: download ? 'CALL_RECORDING_DOWNLOADED' : 'CALL_RECORDING_PLAYED',
@@ -154,7 +164,7 @@ export class RecordingService {
       metadata: { mimeType: recording.mimeType, sizeBytes: details.size },
     });
     return {
-      stream: Readable.from(this.decrypt(encrypted)),
+      stream: Readable.from(plaintext),
       mimeType: recording.mimeType ?? 'audio/mp4',
       sizeBytes: recording.sizeBytes ?? details.size,
       fileName: `call-${attemptId}.${this.extension(recording.mimeType ?? 'audio/mp4')}`,
@@ -162,12 +172,10 @@ export class RecordingService {
   }
 
   async cleanupExpired(): Promise<number> {
-    const policy = await this.prisma.mobileAppPolicy.findUnique({ where: { id: 'android' } });
-    const retentionDays = Math.max(1, policy?.recordingRetentionDays ?? 30);
-    const cutoff = new Date(Date.now() - retentionDays * 86_400_000);
+    const now = new Date();
     const rows = await this.prisma.callRecording.findMany({
       where: {
-        createdAt: { lt: cutoff },
+        expiresAt: { lt: now },
         status: CallRecordingStatus.READY,
       },
       take: 500,
@@ -187,7 +195,7 @@ export class RecordingService {
       await this.audit.record({
         action: 'CALL_RECORDINGS_CLEANED',
         entityType: 'call_recording',
-        metadata: { count: cleaned, retentionDays },
+        metadata: { count: cleaned },
       });
     }
     return cleaned;

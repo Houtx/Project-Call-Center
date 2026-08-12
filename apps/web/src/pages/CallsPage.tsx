@@ -29,6 +29,11 @@ export function CallsPage() {
   ]), [query.page, query.pageSize, query.from, query.to, query.agentId, query.batchId, query.status]);
   const [calls, agents, batches] = remote.data ?? [];
 
+  const closeDetail = () => {
+    if (detail?.recordingUrl) URL.revokeObjectURL(detail.recordingUrl);
+    setDetail(undefined);
+  };
+
   const revealCallPhone = async (record: CallRecord) => {
     setDetail(record);
     try {
@@ -64,7 +69,7 @@ export function CallsPage() {
           pagination={{ current: query.page, pageSize: query.pageSize, total: calls?.total, showSizeChanger: true, showTotal: (total) => `共 ${total} 条`, onChange: (page, pageSize) => setQuery((current) => ({ ...current, page, pageSize })) }}
         />
       </section>
-      <Modal title="通话详情" open={Boolean(detail)} onCancel={() => { if (detail?.recordingUrl) URL.revokeObjectURL(detail.recordingUrl); setDetail(undefined); }} footer={<Button onClick={() => { if (detail?.recordingUrl) URL.revokeObjectURL(detail.recordingUrl); setDetail(undefined); }}>关闭</Button>}>
+      <Modal title="通话详情" open={Boolean(detail)} onCancel={closeDetail} footer={<Button onClick={closeDetail}>关闭</Button>}>
         {detail && <Descriptions bordered column={1} size="small">
           <Descriptions.Item label="外呼尝试 ID"><span className="mono break-all">{detail.attemptId}</span></Descriptions.Item>
           <Descriptions.Item label="客户">{detail.customerName}</Descriptions.Item>
