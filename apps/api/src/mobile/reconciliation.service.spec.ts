@@ -40,4 +40,52 @@ describe('CallReconciliationService', () => {
       data: expect.objectContaining({ operation: 'REMOVE', targetUserId: 'agent-1' }),
     });
   });
+
+  it('removes only retained technical data and acknowledged sync changes', async () => {
+    const prisma = {
+      idempotencyRecord: {
+        findMany: jest.fn().mockResolvedValue([{ id: 'idem-1' }]),
+        deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      refreshToken: {
+        findMany: jest.fn().mockResolvedValue([{ id: 'token-1' }]),
+        deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      importJob: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      importRow: {
+        findMany: jest.fn().mockResolvedValue([{ id: 'row-1' }]),
+        deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      device: {
+        findMany: jest.fn().mockResolvedValue([
+          { userId: 'agent-1', lastSyncCursor: 10n },
+          { userId: 'agent-1', lastSyncCursor: 8n },
+        ]),
+      },
+      syncChange: {
+        findMany: jest.fn().mockResolvedValue([{ cursor: 7n }]),
+        deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const recordings = { cleanupExpired: jest.fn().mockResolvedValue(2) };
+    const service = new CallReconciliationService(prisma as any, {} as any, recordings as any);
+
+    await expect(service.housekeeping()).resolves.toEqual({
+      idempotencyRecords: 1,
+      refreshTokens: 1,
+      cancelledImports: 1,
+      importRows: 1,
+      syncChanges: 1,
+      recordings: 2,
+    });
+    expect(prisma.syncChange.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        targetUserId: 'agent-1',
+        cursor: { lte: 8n },
+      }),
+    }));
+    expect(prisma.syncChange.deleteMany).toHaveBeenCalledWith({
+      where: { cursor: { in: [7n] } },
+    });
+  });
 });

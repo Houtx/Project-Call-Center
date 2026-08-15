@@ -54,7 +54,7 @@ flowchart LR
 ## 技术栈
 
 - Web：React、TypeScript、Ant Design、Vite
-- API/Worker：NestJS、Prisma、Node.js
+- API/可选 Worker：NestJS、Prisma、Node.js；低资源生产模式默认由 API 内嵌后台任务
 - 数据库：PostgreSQL 16
 - Android：Kotlin、Jetpack Compose、Room、WorkManager
 - 本地与生产：Docker Compose；生产入口使用 Nginx 和 HTTPS
@@ -273,6 +273,10 @@ scripts/        端到端与容量测试脚本
 ## 生产部署
 
 不要直接把开发配置用于生产。生产环境必须使用独立随机密钥、HTTPS、正式 Android 签名、数据库备份和严格的访问控制。共享服务器部署前还要检查端口、内存、磁盘、容器和现有 Nginx 站点。
+
+生产 Compose 默认只常驻 PostgreSQL、API、Web 三个容器，内存硬上限合计约 1.1 GiB，并配置了 CPU/PID 上限、Docker 日志轮转、低内存 PostgreSQL 参数和每次 10,000 行的导入上限。后台对账与清理默认在 API 内执行；独立 Worker 只作为可选 profile 保留。客户和通话导出按 500 条分页流式输出，已完成导入的行明细、过期令牌和已确认同步的旧增量会分批清理。
+
+这些限制用于隔离故障，不代表任意低配服务器都能直接上线。真实客户进入前仍须在目标服务器完成压测、磁盘容量测算、备份恢复和 5-10 人真机试运行；开启录音前尤其要单独计算保留期所需空间。
 
 具体步骤见 [运维指南](OPERATIONS_GUIDE.md) 和 [生产部署手册](deploy/README.md)。
 

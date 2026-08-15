@@ -215,6 +215,7 @@ model Customer {
 
   @@index([batchId, status, createdAt])
   @@index([status, updatedAt])
+  @@index([createdAt, id])
   @@map("customers")
 }
 
@@ -321,6 +322,8 @@ model CallAttempt {
   @@index([agentId, initiatedAt])
   @@index([customerId, initiatedAt])
   @@index([status, collectingDeadlineAt])
+  @@index([initiatedAt, id])
+  @@index([status, initiatedAt])
   @@map("call_attempts")
 }
 

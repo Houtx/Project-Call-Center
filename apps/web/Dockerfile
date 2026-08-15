@@ -4,7 +4,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
-RUN npm ci
+RUN npm ci --workspace @call-center/admin-web --include-workspace-root
 
 COPY apps/web apps/web
 ARG VITE_API_BASE_URL=/api/v1

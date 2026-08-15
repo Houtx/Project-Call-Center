@@ -564,6 +564,13 @@ export class AssignmentsService {
     quantity: number,
     client?: Prisma.TransactionClient,
   ) {
+    const maximumQuantity = this.configuredLimit('BULK_ASSIGNMENT_MAX_QUANTITY', 1_000_000);
+    if (quantity > maximumQuantity) {
+      throw new BadRequestException({
+        code: 'ASSIGNMENT_QUANTITY_LIMIT',
+        detail: `当前服务器单次最多分配 ${maximumQuantity.toLocaleString('zh-CN')} 条，请分批操作`,
+      });
+    }
     if (!agentIds.length) {
       throw new BadRequestException({
         code: 'TARGET_AGENT_REQUIRED',
@@ -594,13 +601,21 @@ export class AssignmentsService {
 
   private async resolveBulkCustomerIds(body: BulkAssignmentDto, client?: Prisma.TransactionClient) {
     const db = client ?? this.prisma;
+    const scanLimit = this.configuredLimit('BULK_ASSIGNMENT_SCAN_MAX_ROWS', 100_000);
     const candidates = body.scope === 'FILTER' && body.assignmentStatus === 'NOT_CONNECTED'
-      ? await this.findLatestNotConnectedCustomers(body, client)
+      ? await this.findLatestNotConnectedCustomers(body, scanLimit + 1, client)
       : await db.customer.findMany({
           where: this.buildBulkWhere(body),
           select: { id: true, phoneHash: true, status: true },
           orderBy: { createdAt: 'asc' },
+          take: scanLimit + 1,
         });
+    if (candidates.length > scanLimit) {
+      throw new BadRequestException({
+        code: 'ASSIGNMENT_SCOPE_TOO_LARGE',
+        detail: `当前筛选结果超过服务器单次扫描上限 ${scanLimit.toLocaleString('zh-CN')} 条，请按批次或条件缩小范围`,
+      });
+    }
     const suppressedHashes = new Set<string>();
     for (let offset = 0; offset < candidates.length; offset += 1000) {
       const hashes = candidates.slice(offset, offset + 1000).map((item) => item.phoneHash);
@@ -680,6 +695,7 @@ export class AssignmentsService {
 
   private async findLatestNotConnectedCustomers(
     body: BulkAssignmentDto,
+    limit: number,
     client?: Prisma.TransactionClient,
   ) {
     const conditions: Prisma.Sql[] = [
@@ -756,7 +772,13 @@ export class AssignmentsService {
         ON latest_attempts."assignmentId" = latest_assignments."id"
       WHERE ${Prisma.join(conditions, ' AND ')}
       ORDER BY customer."createdAt" ASC, customer."id" ASC
+      LIMIT ${limit}
     `);
+  }
+
+  private configuredLimit(name: string, fallback: number): number {
+    const parsed = Number(process.env[name]);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
   }
 
   private async assignmentTransaction<T>(

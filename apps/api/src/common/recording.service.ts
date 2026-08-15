@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { CallRecordingStatus, Prisma } from '@prisma/client';
 import { createHash } from 'node:crypto';
@@ -27,6 +27,7 @@ const ALLOWED_MIME_TYPES = new Set(['audio/mp4', 'audio/m4a', 'audio/3gpp', 'aud
 
 @Injectable()
 export class RecordingService {
+  private readonly logger = new Logger(RecordingService.name);
   private readonly root: string;
   private readonly encryptionKey: Buffer;
 
@@ -183,7 +184,14 @@ export class RecordingService {
     let cleaned = 0;
     for (const row of rows) {
       if (row.objectKey) {
-        await unlink(this.safePath(row.objectKey)).catch(() => undefined);
+        try {
+          await unlink(this.safePath(row.objectKey));
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+            this.logger.error(`Unable to delete expired recording ${row.id}; cleanup will retry`);
+            continue;
+          }
+        }
       }
       await this.prisma.callRecording.update({
         where: { id: row.id },

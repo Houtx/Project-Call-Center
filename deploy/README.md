@@ -21,18 +21,18 @@ Do not execute deployment steps until a read-only inventory has recorded the tar
 4. Verify the API health endpoint through loopback before changing Nginx.
 5. Install a dedicated virtual-host file, run `nginx -t`, then reload Nginx without stopping it.
 6. Verify the new web/API routes and every previously recorded existing route.
-7. Verify database migrations, application health, worker backlog and Android bootstrap response.
+7. Verify database migrations, the `backgroundJobs` freshness fields in API health and Android bootstrap response.
 
 Rollback changes only this project's containers and virtual host. Never restart or recreate unrelated containers as part of the rollback.
 
 ## Artifacts
 
-- `compose.production.yaml`: isolated API, Worker, PostgreSQL volume and Web containers.
+- `compose.production.yaml`: isolated API, PostgreSQL volume and Web containers, plus an optional dedicated Worker profile.
 - `.env.production.example`: non-secret environment template. The real `.env.production` is ignored by Git.
 - `nginx-call-center.conf.example`: dedicated loopback reverse proxy virtual host.
 - `backup-postgres.sh`: client-side `age` encryption followed by off-host S3-compatible upload.
 
-The application does not retain the original plaintext import file. Parsed rows are encrypted or masked in PostgreSQL. S3-compatible storage is used for encrypted off-host database backups; exports are generated on demand and audited.
+The application does not retain the original plaintext import file. Parsed rows are encrypted or masked in PostgreSQL, and terminal import-row details are removed after the configured technical-data retention period. S3-compatible storage is used for encrypted off-host database backups; exports are streamed on demand and audited.
 
 ## Read-only preflight
 
@@ -56,7 +56,11 @@ Record every existing public Host route and verify it before any change. Confirm
 
 Build immutable images in CI or on an isolated build machine. Tag both images with the same release version and digest. On the target host, create only `/opt/project-call-center`, then place the Compose file and a private `.env.production` there.
 
-When the build machine and target host use different CPU architectures, build and verify the target image platform explicitly; never transfer an unchecked local image or build the application on a memory-constrained production host. Before production, add tested CPU, memory, PID and log-rotation limits to the Compose services and add a business-level freshness signal for the Worker.
+When the build machine and target host use different CPU architectures, build and verify the target image platform explicitly; never transfer an unchecked local image or build the application on a memory-constrained production host. The Compose file includes conservative, environment-overridable CPU, memory, PID and log-rotation limits. Treat them as starting values and verify actual peaks on the target host before admitting real traffic.
+
+The low-resource profile runs reconciliation and hourly housekeeping inside the API process, so the steady-state stack has three containers: PostgreSQL, API and Web. The default hard limits total about 1.1 GiB (`512m + 512m + 64m`), but Docker, the kernel, Nginx, backups and other host services require additional headroom. `IMPORT_MAX_ROWS=10000` is intentional because import parsing is still synchronous and memory-backed.
+
+Keep the sample `connection_limit=10&pool_timeout=10` parameters in `DATABASE_URL` unless a measured connection budget says otherwise. The PostgreSQL container defaults to 40 total connections; an unconstrained Prisma pool can consume that budget on a many-core shared host even when CPU quotas are configured.
 
 Generate secrets independently:
 
@@ -84,7 +88,7 @@ Before an upgrade, complete and verify an off-host encrypted backup. Then start 
 docker compose --env-file deploy/.env.production -f deploy/compose.production.yaml up -d postgres
 docker compose --env-file deploy/.env.production -f deploy/compose.production.yaml run --rm migrate
 docker compose --env-file deploy/.env.production -f deploy/compose.production.yaml run --rm bootstrap-admin
-docker compose --env-file deploy/.env.production -f deploy/compose.production.yaml up -d api worker web
+docker compose --env-file deploy/.env.production -f deploy/compose.production.yaml up -d api web
 docker compose --env-file deploy/.env.production -f deploy/compose.production.yaml ps
 curl --fail --silent http://127.0.0.1:18800/api/v1/health
 curl --fail --silent http://127.0.0.1:18801/healthz
@@ -100,7 +104,18 @@ systemctl reload nginx
 curl --fail --silent https://call.example.com/api/v1/health
 ```
 
-Recheck every preflight Host route after the reload. Verify an admin login, dashboard, one test assignment, mobile bootstrap, Worker logs and the report refresh time before opening access to agents.
+Recheck every preflight Host route after the reload. Verify an admin login, dashboard, one test assignment, mobile bootstrap, the API health `backgroundJobs.lastCycleCompletedAt` value and the report refresh time before opening access to agents.
+
+## Optional dedicated Worker
+
+Use a separate Worker only after measurements show that background reconciliation affects API latency. Set `BACKGROUND_JOBS_ENABLED=false` for the API, then enable the profile:
+
+```bash
+docker compose --env-file deploy/.env.production -f deploy/compose.production.yaml \
+  --profile dedicated-worker up -d api worker web
+```
+
+Do not run the profile while the API setting remains `true`, or both processes will perform the same housekeeping work.
 
 ## Backup and restore drill
 
@@ -127,10 +142,10 @@ Run row-count checks, admin authentication, report queries and a sampled phone d
 
 ## Rollback
 
-Keep the previous immutable API/Web image tags. To roll back application code, change only `API_IMAGE` and `WEB_IMAGE`, then recreate `api`, `worker` and `web`. Database migrations must be reviewed before release; never run an automatic destructive down-migration.
+Keep the previous immutable API/Web image tags. To roll back application code, change only `API_IMAGE` and `WEB_IMAGE`, then recreate `api` and `web`. Database migrations must be reviewed before release; never run an automatic destructive down-migration.
 
 ```bash
-docker compose --env-file deploy/.env.production -f deploy/compose.production.yaml up -d --no-deps api worker web
+docker compose --env-file deploy/.env.production -f deploy/compose.production.yaml up -d --no-deps api web
 ```
 
 If the new Nginx virtual host is the failure source, restore only its previous file, run `nginx -t`, reload, and recheck all Host routes. Do not use `docker compose down` during a routine rollback because PostgreSQL and unrelated availability should remain stable.

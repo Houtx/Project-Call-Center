@@ -64,10 +64,10 @@ export class ReportsController {
     @Req() request: RequestWithPrincipal,
     @Res({ passthrough: true }) response: Response,
   ) {
-    const content = await this.reports.exportCalls(query, request.user.sub);
+    const content = this.reports.exportCalls(query, request.user.sub);
     response.type('text/csv; charset=utf-8');
     response.setHeader('Content-Disposition', `attachment; filename="calls-${Date.now()}.csv"`);
-    return content;
+    return new StreamableFile(content);
   }
 
   @Get('audit-events')

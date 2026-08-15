@@ -41,6 +41,13 @@ describe('AuthService mobile single-session login', () => {
         }),
       },
       allowedDeviceModel: { findUnique: jest.fn() },
+      assignment: {
+        findMany: jest.fn().mockResolvedValue([{
+          id: 'assignment-1',
+          customerId: 'customer-1',
+        }]),
+      },
+      syncChange: { createMany: jest.fn().mockResolvedValue({ count: 1 }) },
       device: {
         findUnique: jest.fn().mockImplementation(async ({ where }: any) =>
           devices.find((item) => item.installId === where.installId) ?? null),
@@ -150,6 +157,16 @@ describe('AuthService mobile single-session login', () => {
     expect(refreshTokens[0].revokedAt).toBeInstanceOf(Date);
     expect(refreshTokens[1].revokedAt).toBeNull();
     expect(tx.$executeRaw).toHaveBeenCalledTimes(2);
+    expect(tx.syncChange.createMany).toHaveBeenCalledTimes(2);
+    expect(tx.syncChange.createMany).toHaveBeenLastCalledWith({
+      data: [{
+        targetUserId: user.id,
+        entityType: 'ASSIGNMENT',
+        entityId: 'assignment-1',
+        operation: 'UPSERT',
+        payload: { assignmentId: 'assignment-1', customerId: 'customer-1' },
+      }],
+    });
 
     await expect(service.validatePrincipal(firstPrincipal as any)).rejects.toBeInstanceOf(
       UnauthorizedException,

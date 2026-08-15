@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { AssignmentsModule } from './assignments/assignments.module';
 import { AuthModule } from './auth/auth.module';
+import { BackgroundModule } from './background/background.module';
 import { JwtAuthGuard, RolesGuard } from './auth/auth.guards';
 import { CommonModule } from './common/common.module';
 import { CustomersModule } from './customers/customers.module';
@@ -27,6 +28,7 @@ import { UsersModule } from './users/users.module';
     ImportsModule,
     MobileModule,
     ReportsModule,
+    BackgroundModule,
     HealthModule,
   ],
   providers: [

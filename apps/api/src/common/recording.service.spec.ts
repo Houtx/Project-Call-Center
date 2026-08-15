@@ -149,4 +149,35 @@ describe('RecordingService', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('keeps an expired recording ready when its file cannot be deleted', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'call-recording-delete-failure-'));
+    const objectKey = 'recordings/undeletable.m4a';
+    const prisma = {
+      callRecording: {
+        findMany: jest.fn().mockResolvedValue([{
+          id: 'recording-1',
+          objectKey,
+          status: CallRecordingStatus.READY,
+        }]),
+        update: jest.fn(),
+      },
+    };
+    const service = new RecordingService(
+      prisma as any,
+      {
+        get: jest.fn((key: string) => key === 'RECORDINGS_DIR'
+          ? root
+          : createHash('sha256').update('recording-test-key').digest('base64')),
+      } as any,
+      { record: jest.fn() } as any,
+    );
+    try {
+      await mkdir(join(root, objectKey), { recursive: true });
+      await expect(service.cleanupExpired()).resolves.toBe(0);
+      expect(prisma.callRecording.update).not.toHaveBeenCalled();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

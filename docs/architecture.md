@@ -16,8 +16,8 @@ The Android system CallLog is an operational observation, not carrier-grade evid
 | Component | Responsibility |
 | --- | --- |
 | Admin web | Customer, batch, allocation, agent, device, suppression, call and audit workflows |
-| API | Authentication, authorization, business invariants, encrypted phone storage and reporting |
-| Worker | Call timeout reconciliation and asynchronous maintenance jobs |
+| API | Authentication, authorization, business invariants, encrypted phone storage, reporting and default background jobs |
+| Optional Worker | Runs reconciliation separately only when the `dedicated-worker` production profile is enabled |
 | PostgreSQL | Transactional source of truth and audit history |
 | Android app | Foreground synchronization, dial handoff, local outbox and CallLog matching |
 | S3-compatible storage | Client-side encrypted off-host database backups in production |
@@ -36,7 +36,7 @@ Before any business screen or background collection runs, the app checks the pub
 
 The server has a second compatibility boundary: exact manufacturer/model/API allowlisting and `minimumVersionCode`. Administrators can disable the allowlist check with `deviceCompatibilityRequired` when a controlled rollout needs to accept any Android 12+ device; app version, active-device, online and call-permission checks remain enforced. When `forceUpgrade` is enabled, clients below `latestVersionCode` are rejected while the latest version remains usable.
 
-An agent login includes the app installation ID and device metadata. The API serializes logins for that agent, revokes all previous refresh tokens and active devices, increments the JWT session version, then makes the current phone the only active device. Old access tokens fail on their next request, and the foreground app checks its session at least every 15 seconds. Administrators may still revoke the current device manually. A phone with an uncollected CallLog observation should finish uploading before another phone replaces its session.
+An agent login includes the app installation ID and device metadata. The API serializes logins for that agent, revokes all previous refresh tokens and active devices, increments the JWT session version, then makes the current phone the only active device. It also emits a fresh sync snapshot for every active assignment, so a replacement phone does not depend on old sync-history rows. Old access tokens fail on their next request, and the foreground app checks its session at least every 15 seconds. Administrators may still revoke the current device manually. A phone with an uncollected CallLog observation should finish uploading before another phone replaces its session.
 
 ## Call state model
 
@@ -49,6 +49,6 @@ An agent login includes the app installation ID and device metadata. The API ser
 
 Unknown calls remain visible in the attempt count and data-completeness metric but are excluded from the connection-rate denominator.
 
-Original plaintext import files are parsed in memory and are not retained. Import row metadata and phone values are stored in PostgreSQL using the same encryption and masking boundary as customer data. CSV exports are generated on demand, require administrator authentication and create an audit event.
+Original plaintext import files are parsed in memory and are not retained. Import row metadata and phone values are stored in PostgreSQL using the same encryption and masking boundary as customer data, then terminal row details are removed after the configured technical retention period. CSV exports are generated as bounded database pages and streamed to the administrator; starting an export creates an audit event before any CSV bytes are sent.
 
-The current import implementation is synchronous and materializes up to 100,000 rows in API memory. It is a documented production capacity constraint, not an asynchronous Worker job. See `KNOWN_ISSUES.md` before sizing a host.
+The current import implementation is synchronous and has a hard ceiling of 100,000 rows; the low-resource production profile defaults to 10,000. CSV parsing and the XLSX streaming preflight stop when that configured row ceiling is exceeded, while accepted XLSX rows are still parsed and staged in API memory after preflight. It is a documented production capacity constraint, not an asynchronous Worker job. See `KNOWN_ISSUES.md` before sizing a host.

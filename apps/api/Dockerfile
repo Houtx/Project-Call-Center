@@ -7,12 +7,24 @@ RUN apt-get update \
 COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
-RUN npm ci
+RUN npm ci --workspace @call-center/api --include-workspace-root
 
 COPY apps/api apps/api
 RUN npm run prisma:generate --workspace @call-center/api \
-    && npm run build --workspace @call-center/api \
-    && npm prune --omit=dev
+    && npm run build --workspace @call-center/api
+
+FROM node:22-bookworm-slim AS production-dependencies
+
+WORKDIR /app
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends openssl \
+    && rm -rf /var/lib/apt/lists/*
+COPY package.json package-lock.json ./
+COPY apps/api/package.json apps/api/package.json
+COPY apps/web/package.json apps/web/package.json
+RUN npm ci --omit=dev --workspace @call-center/api --include-workspace-root
+COPY apps/api/prisma apps/api/prisma
+RUN npm run prisma:generate --workspace @call-center/api
 
 FROM node:22-bookworm-slim AS runtime
 
@@ -22,7 +34,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends dumb-init openssl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=build --chown=node:node /app/node_modules node_modules
+COPY --from=production-dependencies --chown=node:node /app/node_modules node_modules
 COPY --from=build --chown=node:node /app/apps/api/dist apps/api/dist
 COPY --from=build --chown=node:node /app/apps/api/prisma apps/api/prisma
 COPY --from=build --chown=node:node /app/apps/api/package.json apps/api/package.json

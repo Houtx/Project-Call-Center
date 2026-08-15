@@ -202,6 +202,55 @@ describe('AssignmentsService', () => {
     });
   });
 
+  it('enforces the configured low-resource bulk quantity limit', async () => {
+    const previous = process.env.BULK_ASSIGNMENT_MAX_QUANTITY;
+    process.env.BULK_ASSIGNMENT_MAX_QUANTITY = '2';
+    const service = new AssignmentsService({} as any, { record: jest.fn() } as any, {} as any);
+    try {
+      await expect(service.previewBulk({
+        scope: 'ALL',
+        agentIds: ['agent-1'],
+        quantity: 3,
+      })).rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'ASSIGNMENT_QUANTITY_LIMIT' }),
+      });
+    } finally {
+      if (previous === undefined) delete process.env.BULK_ASSIGNMENT_MAX_QUANTITY;
+      else process.env.BULK_ASSIGNMENT_MAX_QUANTITY = previous;
+    }
+  });
+
+  it('requires narrower filters when the candidate scan limit is exceeded', async () => {
+    const previous = process.env.BULK_ASSIGNMENT_SCAN_MAX_ROWS;
+    process.env.BULK_ASSIGNMENT_SCAN_MAX_ROWS = '2';
+    const prisma = {
+      user: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'agent-1', username: 'agent', displayName: '坐席一' }),
+      },
+      customer: {
+        findMany: jest.fn().mockResolvedValue([
+          { id: 'customer-1', phoneHash: 'hash-1', status: 'AVAILABLE' },
+          { id: 'customer-2', phoneHash: 'hash-2', status: 'AVAILABLE' },
+          { id: 'customer-3', phoneHash: 'hash-3', status: 'AVAILABLE' },
+        ]),
+      },
+    };
+    const service = new AssignmentsService(prisma as any, { record: jest.fn() } as any, {} as any);
+    try {
+      await expect(service.previewBulk({
+        scope: 'ALL',
+        agentIds: ['agent-1'],
+        quantity: 1,
+      })).rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'ASSIGNMENT_SCOPE_TOO_LARGE' }),
+      });
+      expect(prisma.customer.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 3 }));
+    } finally {
+      if (previous === undefined) delete process.env.BULK_ASSIGNMENT_SCAN_MAX_ROWS;
+      else process.env.BULK_ASSIGNMENT_SCAN_MAX_ROWS = previous;
+    }
+  });
+
   it('includes completed customers in a latest-not-connected bulk preview', async () => {
     const prisma = {
       user: {

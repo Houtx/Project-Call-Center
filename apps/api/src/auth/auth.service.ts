@@ -192,6 +192,21 @@ export class AuthService {
                 activatedAt: now,
               },
             });
+        const activeAssignments = await tx.assignment.findMany({
+          where: { agentId: user.id, status: 'ACTIVE' },
+          select: { id: true, customerId: true },
+        });
+        for (let offset = 0; offset < activeAssignments.length; offset += 1000) {
+          await tx.syncChange.createMany({
+            data: activeAssignments.slice(offset, offset + 1000).map((assignment) => ({
+              targetUserId: user.id,
+              entityType: 'ASSIGNMENT' as const,
+              entityId: assignment.id,
+              operation: 'UPSERT' as const,
+              payload: { assignmentId: assignment.id, customerId: assignment.customerId },
+            })),
+          });
+        }
         const tokens = await this.issueTokens(
           user.id,
           user.role,
@@ -209,6 +224,7 @@ export class AuthService {
             model: currentDevice.model,
             androidSdk: currentDevice.androidSdk,
             replacedActiveDevices: revokedDevices.count,
+            synchronizedAssignments: activeAssignments.length,
           },
         }, tx);
         return {

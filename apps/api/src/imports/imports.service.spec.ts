@@ -41,6 +41,34 @@ describe('ImportsService file parsing', () => {
     expect(rows[0]).toMatchObject({ name: 'Li', phone: '13800000002' });
   });
 
+  it.each([
+    ['CSV', 'customers.csv', async () => Buffer.from('姓名,手机号\n甲,13800000001\n乙,13800000002\n丙,13800000003\n')],
+    ['Excel', 'customers.xlsx', async () => {
+      const workbook = new ExcelJS.Workbook();
+      workbook.addWorksheet('Customers').addRows([
+        ['姓名', '手机号'],
+        ['甲', '13800000001'],
+        ['乙', '13800000002'],
+        ['丙', '13800000003'],
+      ]);
+      return Buffer.from(await workbook.xlsx.writeBuffer());
+    }],
+  ])('stops oversized %s imports at the configured row limit', async (_type, originalname, createBuffer) => {
+    const previous = process.env.IMPORT_MAX_ROWS;
+    process.env.IMPORT_MAX_ROWS = '2';
+    try {
+      await expect((service as any).parseFile({
+        originalname,
+        buffer: await createBuffer(),
+      })).rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'IMPORT_TOO_MANY_ROWS' }),
+      });
+    } finally {
+      if (previous === undefined) delete process.env.IMPORT_MAX_ROWS;
+      else process.env.IMPORT_MAX_ROWS = previous;
+    }
+  });
+
   it('fills attribution fields from the phone number', () => {
     const crypto = {
       normalizePhone: jest.fn(() => '+8613800000003'),
@@ -148,5 +176,45 @@ describe('ImportsService file parsing', () => {
       }),
       prisma,
     );
+  });
+
+  it('streams customer exports in bounded pages', async () => {
+    const createdAt = new Date('2026-08-15T01:00:00.000Z');
+    const prisma = {
+      customer: {
+        findMany: jest.fn().mockResolvedValueOnce([{
+          id: 'customer-1',
+          name: '张三',
+          phoneMasked: '138****0001',
+          phoneCiphertext: Buffer.from([1]),
+          phoneIv: Buffer.from([2]),
+          phoneTag: Buffer.from([3]),
+          province: '江苏',
+          city: '徐州',
+          carrier: '中国移动',
+          tags: ['重点'],
+          notes: '回访',
+          createdAt,
+          batch: { name: '八月批次' },
+          assignments: [{ agent: { displayName: '坐席甲' } }],
+        }]),
+      },
+    };
+    const audit = { record: jest.fn() };
+    const crypto = { decryptPhone: jest.fn().mockReturnValue('+8613800000001') };
+    const importService = new ImportsService(prisma as any, crypto as any, {} as any, audit as any);
+
+    let content = '';
+    for await (const chunk of importService.exportCustomers({ page: 1, pageSize: 20 }, 'admin-1')) {
+      content += chunk.toString();
+    }
+
+    expect(content).toContain('"客户名称","联系号码"');
+    expect(content).toContain("\"张三\",\"'+8613800000001\",\"八月批次\"");
+    expect(prisma.customer.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 500 }));
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'CUSTOMERS_EXPORTED',
+      metadata: { maximumRows: 100_000, streamed: true },
+    }));
   });
 });

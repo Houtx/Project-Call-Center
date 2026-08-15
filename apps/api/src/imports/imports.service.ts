@@ -14,7 +14,11 @@ import {
 } from '@prisma/client';
 import { parse } from 'csv-parse/sync';
 import * as ExcelJS from 'exceljs';
+import { posix } from 'node:path';
+import { Readable } from 'node:stream';
 import { readSheet } from 'read-excel-file/node';
+import { SaxesParser, SaxesTagPlain } from 'saxes';
+import { File as ZipEntry, Open as ZipArchive } from 'unzipper-esm';
 import { AuditService } from '../common/audit.service';
 import { CryptoService } from '../common/crypto.service';
 import { PhoneAttributionService } from '../common/phone-attribution.service';
@@ -23,6 +27,9 @@ import { CustomerQueryDto } from '../customers/customers.dto';
 import { DuplicateModeDto } from './imports.dto';
 
 type Cell = string | number | boolean | Date | null | undefined;
+
+const MEBIBYTE = 1024 * 1024;
+const MAX_XLSX_ARCHIVE_ENTRIES = 512;
 
 interface ParsedImportRow {
   rowNumber: number;
@@ -65,8 +72,12 @@ export class ImportsService {
     const batch = await this.requireActiveBatch(batchId, client);
     const parsed = await this.parseFile(file);
     if (!parsed.length) throw new BadRequestException({ code: 'IMPORT_EMPTY' });
-    if (parsed.length > 100_000) {
-      throw new BadRequestException({ code: 'IMPORT_TOO_MANY_ROWS', detail: '每次最多导入 100,000 行' });
+    const maxRows = this.importMaxRows();
+    if (parsed.length > maxRows) {
+      throw new BadRequestException({
+        code: 'IMPORT_TOO_MANY_ROWS',
+        detail: `当前服务器每次最多导入 ${maxRows.toLocaleString('zh-CN')} 行`,
+      });
     }
 
     const prepared = parsed.map((row) => this.prepareRow(row, batch.name));
@@ -340,7 +351,7 @@ export class ImportsService {
     return content;
   }
 
-  async exportCustomers(query: CustomerQueryDto, actorId: string): Promise<Buffer> {
+  exportCustomers(query: CustomerQueryDto, actorId: string): Readable {
     const where: Prisma.CustomerWhereInput = {
       status: query.status === 'ARCHIVED'
         ? CustomerStatus.ARCHIVED
@@ -348,46 +359,279 @@ export class ImportsService {
       ...(query.batchId ? { batchId: query.batchId } : {}),
       ...(query.agentId ? { assignments: { some: { agentId: query.agentId, status: 'ACTIVE' } } } : {}),
     };
-    const customers = await this.prisma.customer.findMany({
-      where,
-      take: 100_000,
-      orderBy: { createdAt: 'desc' },
-      include: { batch: true, assignments: { where: { status: 'ACTIVE' }, include: { agent: true } } },
-    });
-    const header = ['客户名称', '联系号码', '批次', '省份', '城市', '运营商', '标签', '备注', '分配坐席', '创建时间'];
-    const lines = [header, ...customers.map((customer) => [
-      customer.name ?? '',
-      this.crypto.decryptPhone(customer),
-      customer.batch?.name ?? '',
-      customer.province ?? '',
-      customer.city ?? '',
-      customer.carrier ?? '',
-      customer.tags.join('|'),
-      customer.notes ?? '',
-      customer.assignments[0]?.agent.displayName ?? '',
-      customer.createdAt.toISOString(),
-    ])].map((cells) => cells.map((value) => this.csvCell(value)).join(','));
+    return Readable.from(this.streamCustomerRows(where, actorId));
+  }
+
+  private async *streamCustomerRows(where: Prisma.CustomerWhereInput, actorId: string) {
+    const pageSize = 500;
+    const maximumRows = 100_000;
+    let exported = 0;
+    let cursor: { createdAt: Date; id: string } | undefined;
     await this.audit.record({
       actorId,
       action: 'CUSTOMERS_EXPORTED',
       entityType: 'customer',
-      metadata: { count: customers.length },
+      metadata: { maximumRows, streamed: true },
     });
-    return Buffer.from(`\uFEFF${lines.join('\r\n')}`, 'utf8');
+    const header = [
+      '客户名称',
+      '联系号码',
+      '批次',
+      '省份',
+      '城市',
+      '运营商',
+      '标签',
+      '备注',
+      '分配坐席',
+      '创建时间',
+    ];
+    yield `\uFEFF${header.map((value) => this.csvCell(value)).join(',')}\r\n`;
+
+    while (exported < maximumRows) {
+      const customers = await this.prisma.customer.findMany({
+          where: cursor
+            ? {
+                AND: [
+                  where,
+                  {
+                    OR: [
+                      { createdAt: { lt: cursor.createdAt } },
+                      { createdAt: cursor.createdAt, id: { lt: cursor.id } },
+                    ],
+                  },
+                ],
+              }
+            : where,
+          take: Math.min(pageSize, maximumRows - exported),
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+          include: {
+            batch: true,
+            assignments: { where: { status: 'ACTIVE' }, include: { agent: true } },
+          },
+        });
+      if (!customers.length) break;
+      for (const customer of customers) {
+        yield `${[
+            customer.name ?? '',
+            this.crypto.decryptPhone(customer),
+            customer.batch?.name ?? '',
+            customer.province ?? '',
+            customer.city ?? '',
+            customer.carrier ?? '',
+            customer.tags.join('|'),
+            customer.notes ?? '',
+            customer.assignments[0]?.agent.displayName ?? '',
+            customer.createdAt.toISOString(),
+        ].map((value) => this.csvCell(value)).join(',')}\r\n`;
+      }
+      exported += customers.length;
+      const last = customers.at(-1)!;
+      cursor = { createdAt: last.createdAt, id: last.id };
+      if (customers.length < pageSize) break;
+    }
   }
 
   private async parseFile(file: Express.Multer.File): Promise<ParsedImportRow[]> {
     const extension = file.originalname.toLowerCase().split('.').pop();
-    let matrix: Cell[][];
+    const maxRows = this.importMaxRows();
     if (extension === 'csv') {
-      matrix = parse(file.buffer, { bom: true, skip_empty_lines: true, relax_column_count: true });
-    } else if (extension === 'xlsx') {
-      matrix = (await readSheet(file.buffer)).map((row) => row as Cell[]);
-    } else {
-      throw new BadRequestException({ code: 'IMPORT_FILE_TYPE', detail: '仅支持 .csv 和 .xlsx' });
+      const matrix: Cell[][] = parse(file.buffer, {
+        bom: true,
+        skip_empty_lines: true,
+        relax_column_count: true,
+        to: maxRows + 2,
+      });
+      return this.parseMatrix(matrix, maxRows);
     }
-    if (matrix.length < 2) return [];
-    const headers = matrix[0].map((cell) => this.headerAliases[this.cleanHeader(cell)]);
+    if (extension === 'xlsx') {
+      try {
+        await this.assertXlsxWithinLimit(file.buffer, maxRows);
+        const matrix = (await readSheet(file.buffer)).map((row) => row as Cell[]);
+        return this.parseMatrix(matrix, maxRows);
+      } catch (error) {
+        if (error instanceof BadRequestException) throw error;
+        throw new BadRequestException({
+          code: 'IMPORT_FILE_INVALID',
+          detail: 'Excel 文件损坏或格式不受支持，请使用系统提供的空模板',
+        });
+      }
+    }
+    throw new BadRequestException({ code: 'IMPORT_FILE_TYPE', detail: '仅支持 .csv 和 .xlsx' });
+  }
+
+  private parseMatrix(matrix: Cell[][], maxRows: number): ParsedImportRow[] {
+    if (!matrix.length) return [];
+    const headers = this.validateHeaders(matrix[0]);
+    const rows: ParsedImportRow[] = [];
+    matrix.slice(1).forEach((cells, index) => {
+      const row = this.parseDataCells(cells, index + 2, headers);
+      if (!row) return;
+      rows.push(row);
+      this.assertImportRowLimit(rows.length, maxRows);
+    });
+    return rows;
+  }
+
+  private async assertXlsxWithinLimit(buffer: Buffer, maxRows: number): Promise<void> {
+    const archive = await ZipArchive.buffer(buffer);
+    if (archive.files.length > MAX_XLSX_ARCHIVE_ENTRIES) {
+      throw new BadRequestException({
+        code: 'IMPORT_FILE_TOO_COMPLEX',
+        detail: 'Excel 文件包含过多内部文件，请使用系统提供的空模板',
+      });
+    }
+
+    const workbookEntry = this.requireXlsxEntry(archive.files, 'xl/workbook.xml', MEBIBYTE);
+    const relationsEntry = this.requireXlsxEntry(
+      archive.files,
+      'xl/_rels/workbook.xml.rels',
+      MEBIBYTE,
+    );
+    const relationshipId = this.firstWorksheetRelationshipId(
+      await this.readXlsxEntry(workbookEntry, MEBIBYTE),
+    );
+    const worksheetPath = this.worksheetPathFromRelations(
+      await this.readXlsxEntry(relationsEntry, MEBIBYTE),
+      relationshipId,
+    );
+    const maximumWorksheetBytes = Math.min(
+      256 * MEBIBYTE,
+      Math.max(8 * MEBIBYTE, maxRows * 2048),
+    );
+    const worksheetEntry = this.requireXlsxEntry(
+      archive.files,
+      worksheetPath,
+      maximumWorksheetBytes,
+    );
+    const sharedStrings = archive.files.find((entry) => entry.path === 'xl/sharedStrings.xml');
+    if (sharedStrings) {
+      const maximumSharedStringBytes = Math.min(
+        128 * MEBIBYTE,
+        Math.max(8 * MEBIBYTE, maxRows * 1024),
+      );
+      await this.consumeXlsxEntry(sharedStrings, maximumSharedStringBytes);
+    }
+    const styles = archive.files.find((entry) => entry.path === 'xl/styles.xml');
+    if (styles) await this.consumeXlsxEntry(styles, 4 * MEBIBYTE);
+
+    let rowCount = 0;
+    let limitExceeded = false;
+    const parser = new SaxesParser({ xmlns: false });
+    parser.on('opentag', (tag) => {
+      if (this.xmlLocalName(tag.name) !== 'row') return;
+      rowCount += 1;
+      if (rowCount > maxRows + 1) limitExceeded = true;
+    });
+    const stream = worksheetEntry.stream();
+    let bytesRead = 0;
+    for await (const chunk of stream as AsyncIterable<Buffer>) {
+      bytesRead += chunk.length;
+      if (bytesRead > maximumWorksheetBytes) {
+        throw new BadRequestException({
+          code: 'IMPORT_FILE_TOO_COMPLEX',
+          detail: 'Excel 工作表解压后过大，请拆分文件后导入',
+        });
+      }
+      parser.write(chunk.toString('utf8'));
+      if (limitExceeded) break;
+    }
+    if (limitExceeded) this.assertImportRowLimit(maxRows + 1, maxRows);
+    parser.close();
+  }
+
+  private requireXlsxEntry(entries: ZipEntry[], path: string, maximumBytes: number): ZipEntry {
+    const entry = entries.find((candidate) => candidate.path === path);
+    if (!entry) throw new Error(`Missing XLSX entry: ${path}`);
+    this.assertXlsxEntrySize(entry, maximumBytes);
+    return entry;
+  }
+
+  private assertXlsxEntrySize(entry: ZipEntry, maximumBytes: number): void {
+    if (entry.uncompressedSize <= maximumBytes) return;
+    throw new BadRequestException({
+      code: 'IMPORT_FILE_TOO_COMPLEX',
+      detail: 'Excel 内容解压后过大，请拆分文件后导入',
+    });
+  }
+
+  private async readXlsxEntry(entry: ZipEntry, maximumBytes: number): Promise<Buffer> {
+    this.assertXlsxEntrySize(entry, maximumBytes);
+    const chunks: Buffer[] = [];
+    let bytesRead = 0;
+    for await (const chunk of entry.stream() as AsyncIterable<Buffer>) {
+      bytesRead += chunk.length;
+      if (bytesRead > maximumBytes) this.throwXlsxEntryTooLarge();
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks, bytesRead);
+  }
+
+  private async consumeXlsxEntry(entry: ZipEntry, maximumBytes: number): Promise<void> {
+    this.assertXlsxEntrySize(entry, maximumBytes);
+    let bytesRead = 0;
+    for await (const chunk of entry.stream() as AsyncIterable<Buffer>) {
+      bytesRead += chunk.length;
+      if (bytesRead > maximumBytes) this.throwXlsxEntryTooLarge();
+    }
+  }
+
+  private throwXlsxEntryTooLarge(): never {
+    throw new BadRequestException({
+      code: 'IMPORT_FILE_TOO_COMPLEX',
+      detail: 'Excel 内容解压后过大，请拆分文件后导入',
+    });
+  }
+
+  private firstWorksheetRelationshipId(xml: Buffer): string {
+    let relationshipId: string | undefined;
+    const parser = new SaxesParser({ xmlns: false });
+    parser.on('opentag', (tag) => {
+      if (relationshipId || this.xmlLocalName(tag.name) !== 'sheet') return;
+      relationshipId = this.xmlAttribute(tag, 'r:id');
+    });
+    parser.write(xml.toString('utf8')).close();
+    if (!relationshipId) throw new Error('XLSX workbook has no worksheet');
+    return relationshipId;
+  }
+
+  private worksheetPathFromRelations(xml: Buffer, relationshipId: string): string {
+    let target: string | undefined;
+    const parser = new SaxesParser({ xmlns: false });
+    parser.on('opentag', (tag) => {
+      if (
+        target ||
+        this.xmlLocalName(tag.name) !== 'Relationship' ||
+        this.xmlAttribute(tag, 'Id') !== relationshipId
+      ) return;
+      target = this.xmlAttribute(tag, 'Target');
+    });
+    parser.write(xml.toString('utf8')).close();
+    if (!target) throw new Error('XLSX worksheet relationship is missing');
+    const normalized = target.startsWith('/')
+      ? posix.normalize(target.slice(1))
+      : posix.normalize(posix.join('xl', target));
+    if (!normalized.startsWith('xl/worksheets/')) {
+      throw new Error('XLSX worksheet relationship is invalid');
+    }
+    return normalized;
+  }
+
+  private xmlAttribute(tag: SaxesTagPlain, name: string): string | undefined {
+    return tag.attributes[name];
+  }
+
+  private xmlLocalName(name: string): string {
+    return name.includes(':') ? name.slice(name.lastIndexOf(':') + 1) : name;
+  }
+
+  private validateHeaders(cells: Cell[]): (keyof Omit<ParsedImportRow, 'rowNumber'>)[] {
+    const lastPopulatedColumn = cells.reduce<number>(
+      (last, cell, index) => String(cell ?? '').trim() ? index + 1 : last,
+      0,
+    );
+    const headers = cells
+      .slice(0, lastPopulatedColumn)
+      .map((cell) => this.headerAliases[this.cleanHeader(cell)]);
     if (
       headers.length !== 2 ||
       headers.some((header) => !header) ||
@@ -400,21 +644,34 @@ export class ImportsService {
         detail: '导入文件必须且只能包含“姓名”和“手机号”两列，请使用系统提供的空模板',
       });
     }
-    return matrix.slice(1).flatMap((cells, index) => {
-      if (cells.every((cell) => String(cell ?? '').trim() === '')) return [];
-      if (cells.slice(2).some((cell) => String(cell ?? '').trim() !== '')) {
-        throw new BadRequestException({
-          code: 'IMPORT_TEMPLATE_MISMATCH',
-          detail: `第 ${index + 2} 行包含模板之外的列，请使用系统提供的空模板`,
-        });
-      }
-      const row: ParsedImportRow = { rowNumber: index + 2 };
-      headers.forEach((field, column) => {
-        if (!field) return;
-        const value = String(cells[column] ?? '').trim();
-        row[field] = value || undefined;
+    return headers;
+  }
+
+  private parseDataCells(
+    cells: Cell[],
+    rowNumber: number,
+    headers: (keyof Omit<ParsedImportRow, 'rowNumber'>)[],
+  ): ParsedImportRow | undefined {
+    if (cells.every((cell) => String(cell ?? '').trim() === '')) return undefined;
+    if (cells.slice(2).some((cell) => String(cell ?? '').trim() !== '')) {
+      throw new BadRequestException({
+        code: 'IMPORT_TEMPLATE_MISMATCH',
+        detail: `第 ${rowNumber} 行包含模板之外的列，请使用系统提供的空模板`,
       });
-      return [row];
+    }
+    const row: ParsedImportRow = { rowNumber };
+    headers.forEach((field, column) => {
+      const value = String(cells[column] ?? '').trim();
+      row[field] = value || undefined;
+    });
+    return row;
+  }
+
+  private assertImportRowLimit(rowCount: number, maxRows: number): void {
+    if (rowCount <= maxRows) return;
+    throw new BadRequestException({
+      code: 'IMPORT_TOO_MANY_ROWS',
+      detail: `当前服务器每次最多导入 ${maxRows.toLocaleString('zh-CN')} 行`,
     });
   }
 
@@ -557,5 +814,12 @@ export class ImportsService {
       return String(value);
     }
     return JSON.stringify(value);
+  }
+
+  private importMaxRows(): number {
+    const parsed = Number(process.env.IMPORT_MAX_ROWS);
+    return Number.isSafeInteger(parsed) && parsed > 0
+      ? Math.min(parsed, 100_000)
+      : 100_000;
   }
 }

@@ -4,14 +4,15 @@ import { ReportsService } from './reports.service';
 describe('ReportsService', () => {
   it('excludes unknown and collecting from the connection-rate denominator', async () => {
     const prisma = {
-      callAttempt: {
-        findMany: jest.fn().mockResolvedValue([
-          { customerId: 'a', status: AttemptStatus.CONNECTED, result: { durationSeconds: 30 } },
-          { customerId: 'a', status: AttemptStatus.NOT_CONNECTED, result: { durationSeconds: 0 } },
-          { customerId: 'b', status: AttemptStatus.UNKNOWN, result: null },
-          { customerId: 'c', status: AttemptStatus.COLLECTING, result: null },
-        ]),
-      },
+      $queryRaw: jest.fn().mockResolvedValue([{
+        attempts: 4n,
+        uniqueCustomers: 3n,
+        connected: 1n,
+        notConnected: 1n,
+        unknown: 1n,
+        collecting: 1n,
+        totalDurationSeconds: 30n,
+      }]),
     };
     const service = new ReportsService(prisma as any, { record: jest.fn() } as any, {} as any, { metadata: jest.fn((item) => item), open: jest.fn() } as any);
 
@@ -142,5 +143,53 @@ describe('ReportsService', () => {
     expect(crypto.decryptPhone).toHaveBeenCalledWith(
       expect.objectContaining({ phoneMasked: '138****0005' }),
     );
+  });
+
+  it('streams call exports in bounded pages', async () => {
+    const initiatedAt = new Date('2026-08-15T01:00:00.000Z');
+    const audit = { record: jest.fn() };
+    const prisma = {
+      callAttempt: {
+        findMany: jest.fn().mockResolvedValueOnce([{
+          id: 'attempt-1',
+          customerId: 'customer-1',
+          agentId: 'agent-1',
+          status: AttemptStatus.NOT_CONNECTED,
+          initiatedAt,
+          customer: {
+            name: '张三',
+            phoneMasked: '138****0001',
+            batch: { id: 'batch-1', name: '八月批次' },
+          },
+          agent: { displayName: '坐席甲' },
+          result: {
+            durationSeconds: 0,
+            systemCallStartedAt: initiatedAt,
+            systemCallEndedAt: initiatedAt,
+            receivedAt: initiatedAt,
+          },
+          recording: null,
+        }]),
+      },
+    };
+    const service = new ReportsService(
+      prisma as any,
+      audit as any,
+      {} as any,
+      { metadata: jest.fn(), open: jest.fn() } as any,
+    );
+
+    let content = '';
+    for await (const chunk of service.exportCalls({ page: 1, pageSize: 20 }, 'admin-1')) {
+      content += chunk.toString();
+    }
+
+    expect(content).toContain('"外呼ID","客户","号码"');
+    expect(content).toContain('"attempt-1","张三","138****0001"');
+    expect(prisma.callAttempt.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 500 }));
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'CALLS_EXPORTED',
+      metadata: { maximumRows: 100_000, streamed: true },
+    }));
   });
 });

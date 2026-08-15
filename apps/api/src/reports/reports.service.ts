@@ -8,6 +8,7 @@ import {
   Role,
   UserStatus,
 } from '@prisma/client';
+import { Readable } from 'node:stream';
 import { AuditService } from '../common/audit.service';
 import { CryptoService } from '../common/crypto.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -25,6 +26,16 @@ interface DashboardAttempt extends SummaryAttempt {
   agent: { id: string; displayName: string; username: string };
 }
 
+interface SummaryAggregateRow {
+  attempts: bigint;
+  uniqueCustomers: bigint;
+  connected: bigint;
+  notConnected: bigint;
+  unknown: bigint;
+  collecting: bigint;
+  totalDurationSeconds: bigint;
+}
+
 @Injectable()
 export class ReportsService {
   constructor(
@@ -35,15 +46,64 @@ export class ReportsService {
   ) {}
 
   async summary(query: CallQueryDto) {
-    const attempts = await this.prisma.callAttempt.findMany({
-      where: this.callWhere(query),
-      select: {
-        customerId: true,
-        status: true,
-        result: { select: { durationSeconds: true } },
-      },
-    });
-    return this.summarizeAttempts(attempts);
+    const filters: Prisma.Sql[] = [];
+    if (query.status) filters.push(Prisma.sql`ca."status" = ${query.status}::"AttemptStatus"`);
+    if (query.agentId) filters.push(Prisma.sql`ca."agentId" = ${query.agentId}::uuid`);
+    if (query.batchId) filters.push(Prisma.sql`c."batchId" = ${query.batchId}::uuid`);
+    if (query.from) filters.push(Prisma.sql`ca."initiatedAt" >= ${new Date(query.from)}`);
+    if (query.to) filters.push(Prisma.sql`ca."initiatedAt" <= ${new Date(query.to)}`);
+    if (query.search) {
+      const search = `%${query.search}%`;
+      filters.push(Prisma.sql`(c."name" ILIKE ${search} OR u."displayName" ILIKE ${search})`);
+    }
+    const where = filters.length
+      ? Prisma.sql`WHERE ${Prisma.join(filters, ' AND ')}`
+      : Prisma.empty;
+    const [row] = await this.prisma.$queryRaw<SummaryAggregateRow[]>(Prisma.sql`
+      SELECT
+        COUNT(*)::bigint AS "attempts",
+        COUNT(DISTINCT ca."customerId")::bigint AS "uniqueCustomers",
+        COUNT(*) FILTER (WHERE ca."status" = ${AttemptStatus.CONNECTED}::"AttemptStatus")::bigint AS "connected",
+        COUNT(*) FILTER (WHERE ca."status" = ${AttemptStatus.NOT_CONNECTED}::"AttemptStatus")::bigint AS "notConnected",
+        COUNT(*) FILTER (WHERE ca."status" = ${AttemptStatus.UNKNOWN}::"AttemptStatus")::bigint AS "unknown",
+        COUNT(*) FILTER (
+          WHERE ca."status" IN (
+            ${AttemptStatus.COLLECTING}::"AttemptStatus",
+            ${AttemptStatus.PENDING}::"AttemptStatus"
+          )
+        )::bigint AS "collecting",
+        COALESCE(SUM(
+          CASE WHEN ca."status" = ${AttemptStatus.CONNECTED}::"AttemptStatus"
+            THEN GREATEST(COALESCE(cr."durationSeconds", 0), 0)
+            ELSE 0
+          END
+        ), 0)::bigint AS "totalDurationSeconds"
+      FROM "call_attempts" ca
+      INNER JOIN "customers" c ON c."id" = ca."customerId"
+      INNER JOIN "users" u ON u."id" = ca."agentId"
+      LEFT JOIN "call_results" cr ON cr."attemptId" = ca."id"
+      ${where}
+    `);
+    const attempts = Number(row?.attempts ?? 0n);
+    const uniqueCustomers = Number(row?.uniqueCustomers ?? 0n);
+    const connected = Number(row?.connected ?? 0n);
+    const notConnected = Number(row?.notConnected ?? 0n);
+    const unknown = Number(row?.unknown ?? 0n);
+    const collecting = Number(row?.collecting ?? 0n);
+    const known = connected + notConnected;
+    const totalDurationSeconds = Math.max(Number(row?.totalDurationSeconds ?? 0n), 0);
+    return {
+      attempts,
+      uniqueCustomers,
+      connected,
+      notConnected,
+      unknown,
+      collecting,
+      dataCompletenessRate: attempts ? known / attempts : 0,
+      connectionRate: known ? connected / known : 0,
+      totalDurationSeconds,
+      averageDurationSeconds: connected ? Math.round(totalDurationSeconds / connected) : 0,
+    };
   }
 
   async dashboard() {
@@ -247,32 +307,80 @@ export class ReportsService {
     };
   }
 
-  async exportCalls(query: CallQueryDto, actorId: string): Promise<Buffer> {
-    const rows = await this.prisma.callAttempt.findMany({
-      where: this.callWhere(query),
-      orderBy: { initiatedAt: 'desc' },
-      take: 100_000,
-      include: {
-        customer: { include: { batch: true } },
-        agent: true,
-        result: true,
-        recording: true,
-      },
-    });
-    const data = [
-      ['外呼ID', '客户', '号码', '坐席', '批次', '状态', '发起时间', '结束时间', '时长(秒)', '采集时间'],
-      ...rows.map((row) => {
-        const item = this.callRecord(row);
-        return [item.attemptId, item.customerName, item.phoneMasked, item.agentName, item.batchName ?? '', item.status, item.startedAt, item.endedAt ?? '', item.durationSeconds ?? '', item.collectedAt ?? ''];
-      }),
-    ];
+  exportCalls(query: CallQueryDto, actorId: string): Readable {
+    return Readable.from(this.streamCallRows(query, actorId));
+  }
+
+  private async *streamCallRows(query: CallQueryDto, actorId: string) {
+    const baseWhere = this.callWhere(query);
+    const pageSize = 500;
+    const maximumRows = 100_000;
+    let exported = 0;
+    let cursor: { initiatedAt: Date; id: string } | undefined;
     await this.audit.record({
       actorId,
       action: 'CALLS_EXPORTED',
       entityType: 'call_attempt',
-      metadata: { count: rows.length },
+      metadata: { maximumRows, streamed: true },
     });
-    return Buffer.from(`\uFEFF${data.map((line) => line.map((cell) => this.csvCell(cell)).join(',')).join('\r\n')}`, 'utf8');
+    yield `\uFEFF${[
+      '外呼ID',
+      '客户',
+      '号码',
+      '坐席',
+      '批次',
+      '状态',
+      '发起时间',
+      '结束时间',
+      '时长(秒)',
+      '采集时间',
+    ].map((cell) => this.csvCell(cell)).join(',')}\r\n`;
+
+    while (exported < maximumRows) {
+      const rows = await this.prisma.callAttempt.findMany({
+          where: cursor
+            ? {
+                AND: [
+                  baseWhere,
+                  {
+                    OR: [
+                      { initiatedAt: { lt: cursor.initiatedAt } },
+                      { initiatedAt: cursor.initiatedAt, id: { lt: cursor.id } },
+                    ],
+                  },
+                ],
+              }
+            : baseWhere,
+          orderBy: [{ initiatedAt: 'desc' }, { id: 'desc' }],
+          take: Math.min(pageSize, maximumRows - exported),
+          include: {
+            customer: { include: { batch: true } },
+            agent: true,
+            result: true,
+            recording: true,
+          },
+        });
+      if (!rows.length) break;
+      for (const row of rows) {
+        const item = this.callRecord(row);
+        yield `${[
+            item.attemptId,
+            item.customerName,
+            item.phoneMasked,
+            item.agentName,
+            item.batchName ?? '',
+            item.status,
+            item.startedAt,
+            item.endedAt ?? '',
+            item.durationSeconds ?? '',
+            item.collectedAt ?? '',
+        ].map((cell) => this.csvCell(cell)).join(',')}\r\n`;
+      }
+      exported += rows.length;
+      const last = rows.at(-1)!;
+      cursor = { initiatedAt: last.initiatedAt, id: last.id };
+      if (rows.length < pageSize) break;
+    }
   }
 
   async audits(query: AuditQueryDto) {

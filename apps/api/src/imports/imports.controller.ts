@@ -7,6 +7,7 @@ import {
   Query,
   Req,
   Res,
+  StreamableFile,
   UploadedFile,
   UseInterceptors,
 } from '@nestjs/common';
@@ -92,10 +93,10 @@ export class ImportsController {
     @Req() request: RequestWithPrincipal,
     @Res({ passthrough: true }) response: Response,
   ) {
-    const content = await this.imports.exportCustomers(query, request.user.sub);
+    const content = this.imports.exportCustomers(query, request.user.sub);
     response.type('text/csv; charset=utf-8');
     response.setHeader('Content-Disposition', `attachment; filename="customers-${Date.now()}.csv"`);
-    return content;
+    return new StreamableFile(content);
   }
 }
 

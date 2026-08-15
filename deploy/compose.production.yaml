@@ -1,7 +1,14 @@
 name: project-call-center
 
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: ${DOCKER_LOG_MAX_SIZE:-10m}
+    max-file: ${DOCKER_LOG_MAX_FILES:-3}
+
 x-api-environment: &api-environment
   NODE_ENV: production
+  NODE_OPTIONS: ${API_NODE_OPTIONS:---max-old-space-size=384}
   API_PORT: "8800"
   TZ: Asia/Shanghai
   DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in deploy/.env.production}
@@ -14,6 +21,14 @@ x-api-environment: &api-environment
   TRUST_PROXY: "true"
   RECORDINGS_DIR: /var/lib/project-call-center/recordings
   RECORDING_ENCRYPTION_KEY: ${RECORDING_ENCRYPTION_KEY:?set RECORDING_ENCRYPTION_KEY in deploy/.env.production}
+  BACKGROUND_JOBS_ENABLED: ${BACKGROUND_JOBS_ENABLED:-true}
+  BACKGROUND_RECONCILIATION_INTERVAL_MS: ${BACKGROUND_RECONCILIATION_INTERVAL_MS:-60000}
+  BACKGROUND_HOUSEKEEPING_INTERVAL_MS: ${BACKGROUND_HOUSEKEEPING_INTERVAL_MS:-3600000}
+  TECHNICAL_DATA_RETENTION_DAYS: ${TECHNICAL_DATA_RETENTION_DAYS:-7}
+  HOUSEKEEPING_BATCH_SIZE: ${HOUSEKEEPING_BATCH_SIZE:-5000}
+  IMPORT_MAX_ROWS: ${IMPORT_MAX_ROWS:-10000}
+  BULK_ASSIGNMENT_MAX_QUANTITY: ${BULK_ASSIGNMENT_MAX_QUANTITY:-10000}
+  BULK_ASSIGNMENT_SCAN_MAX_ROWS: ${BULK_ASSIGNMENT_SCAN_MAX_ROWS:-100000}
 
 x-api-service: &api-service
   image: ${API_IMAGE:-project-call-center-api:0.3.0}
@@ -24,17 +39,44 @@ x-api-service: &api-service
   networks:
     - call-center
   restart: unless-stopped
+  mem_limit: ${API_MEMORY_LIMIT:-512m}
+  cpus: ${API_CPU_LIMIT:-1.0}
+  pids_limit: ${API_PIDS_LIMIT:-128}
+  logging: *default-logging
+  stop_grace_period: 30s
   security_opt:
     - no-new-privileges:true
   read_only: true
   tmpfs:
-    - /tmp:size=64m,mode=1777
+    - /tmp:size=32m,mode=1777
   volumes:
     - recordings-data:/var/lib/project-call-center/recordings
 
 services:
   postgres:
     image: postgres:16-alpine
+    command:
+      - postgres
+      - -c
+      - max_connections=${POSTGRES_MAX_CONNECTIONS:-40}
+      - -c
+      - shared_buffers=${POSTGRES_SHARED_BUFFERS:-96MB}
+      - -c
+      - effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-256MB}
+      - -c
+      - work_mem=${POSTGRES_WORK_MEM:-2MB}
+      - -c
+      - maintenance_work_mem=${POSTGRES_MAINTENANCE_WORK_MEM:-32MB}
+      - -c
+      - autovacuum_work_mem=${POSTGRES_AUTOVACUUM_WORK_MEM:-32MB}
+      - -c
+      - wal_compression=on
+      - -c
+      - checkpoint_timeout=${POSTGRES_CHECKPOINT_TIMEOUT:-15min}
+      - -c
+      - max_wal_size=${POSTGRES_MAX_WAL_SIZE:-512MB}
+      - -c
+      - min_wal_size=${POSTGRES_MIN_WAL_SIZE:-80MB}
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-call_center}
       POSTGRES_USER: ${POSTGRES_USER:-call_center}
@@ -45,6 +87,11 @@ services:
     networks:
       - call-center
     restart: unless-stopped
+    mem_limit: ${POSTGRES_MEMORY_LIMIT:-512m}
+    cpus: ${POSTGRES_CPU_LIMIT:-1.0}
+    pids_limit: ${POSTGRES_PIDS_LIMIT:-128}
+    logging: *default-logging
+    stop_grace_period: 60s
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
@@ -99,7 +146,15 @@ services:
 
   worker:
     <<: *api-service
+    profiles: ["dedicated-worker"]
     command: ["node", "apps/api/dist/src/worker.js"]
+    environment:
+      <<: *api-environment
+      NODE_OPTIONS: ${WORKER_NODE_OPTIONS:---max-old-space-size=160}
+      BACKGROUND_JOBS_ENABLED: "true"
+    mem_limit: ${WORKER_MEMORY_LIMIT:-256m}
+    cpus: ${WORKER_CPU_LIMIT:-0.5}
+    pids_limit: ${WORKER_PIDS_LIMIT:-96}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -116,11 +171,16 @@ services:
     networks:
       - call-center
     restart: unless-stopped
+    mem_limit: ${WEB_MEMORY_LIMIT:-64m}
+    cpus: ${WEB_CPU_LIMIT:-0.25}
+    pids_limit: ${WEB_PIDS_LIMIT:-64}
+    logging: *default-logging
+    stop_grace_period: 15s
     read_only: true
     tmpfs:
-      - /tmp:size=16m,mode=1777
-      - /var/cache/nginx:size=16m,mode=0755
-      - /var/run:size=4m,mode=0755
+      - /tmp:size=8m,mode=1777
+      - /var/cache/nginx:size=8m,mode=0755
+      - /var/run:size=2m,mode=0755
     security_opt:
       - no-new-privileges:true
     healthcheck:
