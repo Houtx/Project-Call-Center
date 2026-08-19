@@ -16,13 +16,13 @@ class PhoneNumberNormalizerTest {
             "１３８００１３８０００",
             "1.3800138E10",
         ).forEach { assertEquals(it, expected, PhoneNumberNormalizer.normalize(it)) }
+        assertEquals("12800138000", PhoneNumberNormalizer.normalize("12800138000"))
+        assertEquals("01088888888", PhoneNumberNormalizer.normalize("010-88888888"))
     }
 
     @Test
     fun `rejects non-mobile and ambiguous values`() {
         listOf(
-            "12800138000",
-            "010-88888888",
             "1380013800",
             "138001380000",
             "+1 3800138000",

@@ -27,12 +27,15 @@ class CsvSpreadsheetReaderTest {
 
         val preview = reader.preview(file)
         assertEquals(SpreadsheetFormat.CSV, preview.format)
+        assertEquals("数据", preview.sheets.single().name)
         assertEquals(3, preview.sheets.single().rowCount)
         val phoneColumn = preview.sheets.single().columns.single { it.index == 1 }
         assertEquals("B", phoneColumn.letter)
         assertEquals("手机号", phoneColumn.header)
-        assertEquals(listOf("13800138000", "1.3900139E10"), phoneColumn.samples)
-        assertEquals(1.0, phoneColumn.validRate, 0.0)
+        assertEquals(listOf("手机号", "13800138000", "1.3900139E10"), phoneColumn.samples)
+        assertEquals(listOf(1, 2, 3), phoneColumn.previewRows.map { it.rowNumber })
+        assertEquals(true, phoneColumn.suggestsHeader)
+        assertEquals(2.0 / 3.0, phoneColumn.validRate, 0.0)
 
         val data = reader.readColumn(file, preview.sheets.single().id, 1, skipHeader = true)
         assertEquals(listOf("13800138000", "1.3900139E10"), data.cells.map { it.value })
@@ -53,7 +56,57 @@ class CsvSpreadsheetReaderTest {
         val gb = temporaryFolder.newFile("customers-gb.csv")
         gb.writeBytes("姓名;手机号\r\n乙;13600136000\r\n".toByteArray(Charset.forName("GB18030")))
         val gbPreview = reader.preview(gb)
-        assertEquals("13600136000", gbPreview.sheets.single().columns[1].samples.single())
+        assertEquals(listOf("手机号", "13600136000"), gbPreview.sheets.single().columns[1].samples)
+    }
+
+    @Test
+    fun `shows the first twenty raw rows with or without a header`() {
+        val file = temporaryFolder.newFile("preview.csv").apply {
+            writeText((1..25).joinToString("\n") { row -> if (row == 1) "自定义标题" else "${13000000000L + row}" })
+        }
+
+        val column = reader.preview(file).sheets.single().columns.single()
+        assertEquals(20, column.previewRows.size)
+        assertEquals("自定义标题", column.previewRows.first().rawValue)
+        assertEquals("13000000020", column.previewRows.last().rawValue)
+        assertEquals(true, column.suggestsHeader)
+    }
+
+    @Test
+    fun `reads an inclusive physical row range and limits range preview`() {
+        val file = temporaryFolder.newFile("range.csv").apply {
+            writeText("手机号\n13800138000\n13900139000\n13700137000\n13600136000\n")
+        }
+
+        val ranged = reader.readColumn(
+            file = file,
+            sheetId = reader.preview(file).sheets.single().id,
+            columnIndex = 0,
+            skipHeader = true,
+            startRow = 3,
+            endRowInclusive = 5,
+        )
+        assertEquals(listOf(3, 4, 5), ranged.cells.map { it.rowNumber })
+        assertEquals(listOf("13900139000", "13700137000", "13600136000"), ranged.cells.map { it.value })
+
+        val preview = reader.readColumn(
+            file = file,
+            sheetId = reader.preview(file).sheets.single().id,
+            columnIndex = 0,
+            skipHeader = false,
+            startRow = 2,
+            endRowInclusive = 5,
+            limit = 2,
+        )
+        assertEquals(listOf(2, 3), preview.cells.map { it.rowNumber })
+    }
+
+    @Test
+    fun `rejects invalid custom row ranges`() {
+        val file = temporaryFolder.newFile("range-invalid.csv").apply { writeText("13800138000") }
+        assertReason(SpreadsheetFailureReason.INVALID_RANGE) {
+            reader.readColumn(file, "text", 0, skipHeader = false, startRow = 3, endRowInclusive = 2)
+        }
     }
 
     @Test

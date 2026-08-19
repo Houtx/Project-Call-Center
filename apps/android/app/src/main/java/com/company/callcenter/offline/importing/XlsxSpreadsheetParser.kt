@@ -8,6 +8,7 @@ import java.io.File
 import java.io.FilterInputStream
 import java.io.InputStream
 import java.math.BigDecimal
+import java.nio.charset.StandardCharsets
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import javax.xml.XMLConstants
@@ -29,19 +30,26 @@ internal class XlsxSpreadsheetParser(private val file: File) {
         )
     }
 
-    fun readColumn(sheetId: String, columnIndex: Int, skipHeader: Boolean): SpreadsheetColumnData =
+    fun readColumn(
+        sheetId: String,
+        columnIndex: Int,
+        skipHeader: Boolean,
+        startRow: Int,
+        endRowInclusive: Int?,
+        limit: Int?,
+    ): SpreadsheetColumnData =
         withArchive { archive ->
             val sheet = readWorkbook(archive).firstOrNull { it.id == sheetId }
                 ?: throw SpreadsheetReadException(SpreadsheetFailureReason.SHEET_NOT_FOUND, "找不到所选工作表")
             val tokens = ArrayList<RowToken>()
             var first = true
             parseSheet(archive, sheet) { rowNumber, cells, _ ->
-                if (first && skipHeader) {
-                    first = false
-                } else {
-                    first = false
+                val skip = first && skipHeader
+                first = false
+                if (!skip && rowNumber >= startRow && (endRowInclusive == null || rowNumber <= endRowInclusive)) {
                     tokens += RowToken(rowNumber, cells[columnIndex] ?: CellToken.Literal(""))
                 }
+                (endRowInclusive == null || rowNumber < endRowInclusive) && (limit == null || tokens.size < limit)
             }
             val sharedStrings = readSharedStrings(
                 archive,
@@ -56,75 +64,99 @@ internal class XlsxSpreadsheetParser(private val file: File) {
 
     private fun scanSheetForPreview(archive: ZipFile, sheet: SheetDescriptor): PreviewTokenScan {
         val scan = PreviewTokenScan(sheet)
-        parseSheet(archive, sheet, scan::accept)
+        parseSheet(archive, sheet) { rowNumber, cells, columns ->
+            scan.accept(rowNumber, cells, columns)
+            true
+        }
         return scan
     }
 
     private fun parseSheet(
         archive: ZipFile,
         sheet: SheetDescriptor,
-        onRow: (Int, Map<Int, CellToken>, Set<Int>) -> Unit,
+        onRow: (Int, Map<Int, CellToken>, Set<Int>) -> Boolean,
     ) {
-        parseXml(openEntry(archive, sheet.path), SheetXmlHandler(onRow))
+        try {
+            parseXml(openEntry(archive, sheet.path), SheetXmlHandler(onRow))
+        } catch (_: StopSheetParsing) {
+            // The requested range or preview limit is complete.
+        }
     }
 
     private fun readWorkbook(archive: ZipFile): List<SheetDescriptor> {
         validateContentTypes(archive)
+        val workbookEntry = archive.workbookEntry() ?: throw corrupt("Excel 文件缺少工作簿组件")
+        val workbookDirectory = workbookEntry.name.substringBeforeLast('/', missingDelimiterValue = "")
         val workbookSheets = mutableListOf<WorkbookSheet>()
-        parseXml(openEntry(archive, WORKBOOK_PATH), object : DefaultHandler() {
+        parseXml(openEntry(archive, workbookEntry), object : DefaultHandler() {
             override fun startElement(uri: String?, localName: String?, qName: String?, attributes: Attributes) {
                 if (elementName(localName, qName) != "sheet") return
                 val name = attributes.value("name")?.takeIf(String::isNotBlank)
-                    ?: throw corrupt("工作表名称缺失")
+                    ?: "工作表 ${workbookSheets.size + 1}"
                 validateCell(name)
-                val relationshipId = attributes.relationshipId() ?: throw corrupt("工作表关系缺失")
-                workbookSheets += WorkbookSheet(relationshipId, name)
+                workbookSheets += WorkbookSheet(
+                    relationshipId = attributes.relationshipId(),
+                    sheetId = attributes.value("sheetId"),
+                    name = name,
+                )
             }
         })
         if (workbookSheets.isEmpty()) throw corrupt("Excel 文件不包含工作表")
 
         val relationships = mutableMapOf<String, String>()
-        parseXml(openEntry(archive, WORKBOOK_RELS_PATH), object : DefaultHandler() {
-            override fun startElement(uri: String?, localName: String?, qName: String?, attributes: Attributes) {
-                if (elementName(localName, qName) != "Relationship") return
-                val type = attributes.value("Type").orEmpty()
-                if (!type.endsWith("/worksheet")) return
-                if (attributes.value("TargetMode")?.equals("External", ignoreCase = true) == true) {
-                    throw corrupt("工作表不能引用外部文件")
+        val workbookRelationshipsPath = listOfNotNull(
+            workbookDirectory.takeIf(String::isNotEmpty),
+            "_rels",
+            "${workbookEntry.name.substringAfterLast('/')}.rels",
+        ).joinToString("/")
+        archive.findEntry(workbookRelationshipsPath)?.let { relationshipsEntry ->
+            parseXml(openEntry(archive, relationshipsEntry), object : DefaultHandler() {
+                override fun startElement(uri: String?, localName: String?, qName: String?, attributes: Attributes) {
+                    if (elementName(localName, qName) != "Relationship") return
+                    val type = attributes.value("Type").orEmpty()
+                    val target = attributes.value("Target").orEmpty()
+                    if (!type.endsWith("/worksheet") && !target.contains("worksheet", ignoreCase = true)) return
+                    if (attributes.value("TargetMode")?.equals("External", ignoreCase = true) == true) return
+                    val id = attributes.value("Id") ?: return
+                    if (target.isBlank()) return
+                    relationships[id] = normalizeZipPath(workbookDirectory, target)
                 }
-                val id = attributes.value("Id") ?: throw corrupt("工作表关系 ID 缺失")
-                val target = attributes.value("Target") ?: throw corrupt("工作表目标缺失")
-                relationships[id] = normalizeZipPath("xl", target)
-            }
-        })
-        return workbookSheets.map { sheet ->
-            val path = relationships[sheet.relationshipId] ?: throw corrupt("工作表关系无法解析")
-            if (archive.getEntry(path) == null) throw corrupt("工作表文件缺失")
-            SheetDescriptor(sheet.relationshipId, sheet.name, path)
+            })
+        }
+        return workbookSheets.mapIndexedNotNull { index, sheet ->
+            val candidates = listOfNotNull(
+                sheet.relationshipId?.let(relationships::get),
+                sheet.sheetId?.let { "$workbookDirectory/worksheets/sheet$it.xml".trimStart('/') },
+                "$workbookDirectory/worksheets/sheet${index + 1}.xml".trimStart('/'),
+            ).distinct()
+            val entry = candidates.firstNotNullOfOrNull { archive.findEntry(it) } ?: return@mapIndexedNotNull null
+            SheetDescriptor(sheet.relationshipId ?: sheet.sheetId ?: entry.name, sheet.name, entry.name)
+        }.ifEmpty {
+            throw corrupt("Excel 文件不包含可读取的工作表")
         }
     }
 
     private fun validateContentTypes(archive: ZipFile) {
-        var validWorkbook = false
-        var macroWorkbook = false
-        parseXml(openEntry(archive, CONTENT_TYPES_PATH), object : DefaultHandler() {
+        val entry = archive.findEntry(CONTENT_TYPES_PATH) ?: return
+        var workbookIsXml = false
+        parseXml(openEntry(archive, entry), object : DefaultHandler() {
             override fun startElement(uri: String?, localName: String?, qName: String?, attributes: Attributes) {
                 if (elementName(localName, qName) != "Override") return
-                if (attributes.value("PartName") != "/xl/workbook.xml") return
+                if (!attributes.value("PartName").orEmpty().trimStart('/').equals(WORKBOOK_PATH, ignoreCase = true)) return
                 val contentType = attributes.value("ContentType").orEmpty()
-                validWorkbook = contentType == XLSX_WORKBOOK_CONTENT_TYPE
-                macroWorkbook = contentType.contains("macroEnabled", ignoreCase = true)
+                workbookIsXml = contentType.endsWith("+xml", ignoreCase = true)
             }
         })
-        if (macroWorkbook) {
-            throw SpreadsheetReadException(SpreadsheetFailureReason.UNSUPPORTED_FORMAT, "不支持包含宏的 Excel 文件")
+        if (!workbookIsXml && archive.workbookEntry() == null) {
+            throw corrupt("不是可读取的 Excel XML 工作簿")
         }
-        if (!validWorkbook) throw corrupt("不是有效的 .xlsx 工作簿")
     }
 
     private fun readSharedStrings(archive: ZipFile, requested: Set<Int>): Map<Int, String> {
         if (requested.isEmpty()) return emptyMap()
-        val entry = archive.getEntry(SHARED_STRINGS_PATH) ?: throw corrupt("共享字符串表缺失")
+        val entry = archive.findEntry(SHARED_STRINGS_PATH)
+            ?: archive.entries().asSequence().firstOrNull { it.name.endsWith("/sharedStrings.xml", ignoreCase = true) }
+            ?: return emptyMap()
         val result = mutableMapOf<Int, String>()
         var currentIndex = -1
         var insideItem = false
@@ -167,7 +199,6 @@ internal class XlsxSpreadsheetParser(private val file: File) {
                 }
             }
         })
-        if (!result.keys.containsAll(requested)) throw corrupt("共享字符串索引越界")
         return result
     }
 
@@ -197,7 +228,7 @@ internal class XlsxSpreadsheetParser(private val file: File) {
                 throw limitExceeded("Excel 解压内容过大")
             }
             if (uncompressed > ImportLimits.MAX_UNCOMPRESSED_BYTES) {
-                throw limitExceeded("Excel 解压内容不能超过 128 MiB")
+                throw limitExceeded("Excel 解压内容不能超过 512 MiB")
             }
             if (size > ZIP_RATIO_CHECK_THRESHOLD && (
                     compressed == 0L || size / compressed.coerceAtLeast(1L) > ImportLimits.MAX_ZIP_COMPRESSION_RATIO
@@ -206,13 +237,11 @@ internal class XlsxSpreadsheetParser(private val file: File) {
                 throw limitExceeded("Excel 压缩比异常，文件可能不安全")
             }
         }
-        listOf(CONTENT_TYPES_PATH, WORKBOOK_PATH, WORKBOOK_RELS_PATH).forEach { required ->
-            if (archive.getEntry(required) == null) throw corrupt("Excel 文件缺少必要组件")
-        }
+        if (archive.workbookEntry() == null) throw corrupt("Excel 文件缺少工作簿组件")
     }
 
     private fun openEntry(archive: ZipFile, path: String): InputStream {
-        val entry = archive.getEntry(path) ?: throw corrupt("Excel 组件缺失：$path")
+        val entry = archive.findEntry(path) ?: throw corrupt("Excel 组件缺失：$path")
         return openEntry(archive, entry)
     }
 
@@ -242,7 +271,37 @@ internal class XlsxSpreadsheetParser(private val file: File) {
         }
     }
 
-    private data class WorkbookSheet(val relationshipId: String, val name: String)
+    private class DoctypeRejectingInputStream(input: InputStream) : FilterInputStream(input) {
+        private val matches = IntArray(DOCTYPE_MARKERS.size)
+
+        override fun read(): Int {
+            val value = super.read()
+            if (value != -1) inspect(value.toByte())
+            return value
+        }
+
+        override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+            val count = super.read(buffer, offset, length)
+            if (count > 0) {
+                for (index in offset until offset + count) inspect(buffer[index])
+            }
+            return count
+        }
+
+        private fun inspect(value: Byte) {
+            DOCTYPE_MARKERS.forEachIndexed { index, marker ->
+                val matched = matches[index]
+                matches[index] = when {
+                    value == marker[matched] -> matched + 1
+                    value == marker[0] -> 1
+                    else -> 0
+                }
+                if (matches[index] == marker.size) throw corrupt("Excel XML 不允许 DOCTYPE")
+            }
+        }
+    }
+
+    private data class WorkbookSheet(val relationshipId: String?, val sheetId: String?, val name: String)
     private data class SheetDescriptor(val id: String, val name: String, val path: String)
     private data class RowToken(val rowNumber: Int, val token: CellToken)
 
@@ -252,68 +311,60 @@ internal class XlsxSpreadsheetParser(private val file: File) {
 
         fun resolve(sharedStrings: Map<Int, String>): String = when (this) {
             is Literal -> value
-            is Shared -> sharedStrings[index] ?: throw corrupt("共享字符串索引越界")
+            is Shared -> sharedStrings[index].orEmpty()
         }
     }
 
     private class PreviewTokenScan(private val sheet: SheetDescriptor) {
-        private var firstRow: Map<Int, CellToken>? = null
-        private val seen = BooleanArray(ImportLimits.MAX_COLUMNS)
-        private val values = Array(ImportLimits.MAX_COLUMNS) { mutableListOf<CellToken>() }
+        private val seen = linkedSetOf<Int>()
+        private val previewRows = mutableListOf<Pair<Int, Map<Int, CellToken>>>()
         var rowCount: Int = 0
             private set
+        var lastRowNumber: Int = 0
+            private set
 
-        @Suppress("UNUSED_PARAMETER")
         fun accept(rowNumber: Int, cells: Map<Int, CellToken>, presentColumns: Set<Int>) {
             rowCount += 1
-            presentColumns.forEach { seen[it] = true }
-            if (firstRow == null) {
-                firstRow = cells.toMap()
-                return
-            }
-            cells.forEach { (column, token) ->
-                if (token is CellToken.Literal && token.value.isBlank()) return@forEach
-                if (values[column].size < ImportLimits.PREVIEW_VALUE_LIMIT) values[column] += token
-            }
+            lastRowNumber = maxOf(lastRowNumber, rowNumber)
+            seen += presentColumns
+            if (previewRows.size < ImportLimits.PREVIEW_SAMPLE_LIMIT) previewRows += rowNumber to cells.toMap()
         }
 
         fun sharedIndexes(): Set<Int> = buildSet {
-            firstRow.orEmpty().values.forEach { if (it is CellToken.Shared) add(it.index) }
-            values.forEach { tokens -> tokens.forEach { if (it is CellToken.Shared) add(it.index) } }
+            previewRows.forEach { (_, cells) ->
+                cells.values.forEach { if (it is CellToken.Shared) add(it.index) }
+            }
         }
 
         fun build(sharedStrings: Map<Int, String>): SpreadsheetSheetPreview {
-            val headings = firstRow.orEmpty()
-            val columns = seen.indices.filter { seen[it] }.map { index ->
+            val headings = previewRows.firstOrNull()?.second.orEmpty()
+            val columns = seen.sorted().map { index ->
                 val firstValue = headings[index]?.resolve(sharedStrings).orEmpty()
                 val firstIsPhone = PhoneNumberNormalizer.normalize(firstValue) != null
                 val header = firstValue.takeIf { it.isNotBlank() && !firstIsPhone }
-                val sampled = buildList {
-                    if (firstIsPhone) add(firstValue)
-                    values[index].asSequence()
-                        .map { it.resolve(sharedStrings) }
-                        .filter(String::isNotBlank)
-                        .take(ImportLimits.PREVIEW_VALUE_LIMIT)
-                        .forEach(::add)
-                }.take(ImportLimits.PREVIEW_VALUE_LIMIT)
+                val sampled = previewRows.mapNotNull { (_, cells) ->
+                    cells[index]?.resolve(sharedStrings)?.takeIf(String::isNotBlank)
+                }
                 SpreadsheetColumnPreview(
                     index = index,
                     letter = columnLetter(index),
                     header = header,
-                    samples = sampled.take(ImportLimits.PREVIEW_SAMPLE_LIMIT),
+                    previewRows = previewRows.map { (rowNumber, cells) ->
+                        SpreadsheetCellPreview(rowNumber, cells[index]?.resolve(sharedStrings).orEmpty())
+                    },
                     validPhoneCount = sampled.count { PhoneNumberNormalizer.normalize(it) != null },
                     sampledValueCount = sampled.size,
                 )
             }
-            return SpreadsheetSheetPreview(sheet.id, sheet.name, rowCount, columns)
+            return SpreadsheetSheetPreview(sheet.id, sheet.name, rowCount, lastRowNumber, columns)
         }
     }
 
     private class SheetXmlHandler(
-        private val onRow: (Int, Map<Int, CellToken>, Set<Int>) -> Unit,
+        private val onRow: (Int, Map<Int, CellToken>, Set<Int>) -> Boolean,
     ) : DefaultHandler() {
         private var rowNumber = 0
-        private var previousRowNumber = 0
+        private var parsedRowCount = 0
         private var cells: MutableMap<Int, CellToken>? = null
         private var presentColumns: MutableSet<Int>? = null
         private var cellColumn = -1
@@ -329,17 +380,21 @@ internal class XlsxSpreadsheetParser(private val file: File) {
             when (elementName(localName, qName)) {
                 "row" -> {
                     if (cells != null) throw corrupt("工作表行嵌套无效")
-                    rowNumber = attributes.value("r")?.toIntOrNull() ?: (previousRowNumber + 1)
-                    if (rowNumber <= previousRowNumber || rowNumber > ImportLimits.MAX_ROWS) {
-                        throw limitExceeded("工作表行号超过限制或顺序无效")
-                    }
+                    parsedRowCount += 1
+                    if (parsedRowCount > ImportLimits.MAX_ROWS) throw limitExceeded("工作表最多支持 ${ImportLimits.MAX_ROWS} 行")
+                    val explicitRow = attributes.value("r")?.toIntOrNull()
+                    rowNumber = explicitRow
+                        ?.takeIf { it in (rowNumber + 1)..ImportLimits.MAX_PHYSICAL_ROW }
+                        ?: (rowNumber + 1)
                     cells = linkedMapOf()
                     presentColumns = linkedSetOf()
                     nextImplicitColumn = 0
                 }
                 "c" -> {
                     if (cells == null) throw corrupt("单元格不属于任何行")
-                    cellColumn = attributes.value("r")?.let(::parseColumnReference) ?: nextImplicitColumn
+                    cellColumn = attributes.value("r")
+                        ?.let { reference -> runCatching { parseColumnReference(reference) }.getOrNull() }
+                        ?: nextImplicitColumn
                     if (cellColumn !in 0 until ImportLimits.MAX_COLUMNS) {
                         throw limitExceeded("工作表最多支持 ${ImportLimits.MAX_COLUMNS} 列")
                     }
@@ -382,10 +437,10 @@ internal class XlsxSpreadsheetParser(private val file: File) {
                 }
                 "row" -> {
                     val completedCells = cells ?: throw corrupt("工作表行结构无效")
-                    onRow(rowNumber, completedCells, presentColumns.orEmpty())
-                    previousRowNumber = rowNumber
+                    val continueReading = onRow(rowNumber, completedCells, presentColumns.orEmpty())
                     cells = null
                     presentColumns = null
+                    if (!continueReading) throw StopSheetParsing()
                 }
             }
         }
@@ -402,8 +457,7 @@ internal class XlsxSpreadsheetParser(private val file: File) {
             val raw = rawValue.orEmpty().trim()
             return when (type) {
                 "s" -> {
-                    val index = raw.toIntOrNull()?.takeIf { it >= 0 } ?: throw corrupt("共享字符串索引无效")
-                    CellToken.Shared(index)
+                    raw.toIntOrNull()?.takeIf { it >= 0 }?.let { CellToken.Shared(it) } ?: CellToken.Literal(raw)
                 }
                 "inlineStr" -> CellToken.Literal(inline.orEmpty())
                 "b" -> CellToken.Literal(if (raw == "1") "TRUE" else if (raw == "0") "FALSE" else raw)
@@ -413,13 +467,12 @@ internal class XlsxSpreadsheetParser(private val file: File) {
         }
     }
 
+    private class StopSheetParsing : RuntimeException(null, null, false, false)
+
     private companion object {
         const val CONTENT_TYPES_PATH = "[Content_Types].xml"
         const val WORKBOOK_PATH = "xl/workbook.xml"
-        const val WORKBOOK_RELS_PATH = "xl/_rels/workbook.xml.rels"
         const val SHARED_STRINGS_PATH = "xl/sharedStrings.xml"
-        const val XLSX_WORKBOOK_CONTENT_TYPE =
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"
         const val ZIP_RATIO_CHECK_THRESHOLD = 1L * 1024L * 1024L
 
         fun canonicalNumericValue(raw: String): String {
@@ -436,6 +489,7 @@ internal class XlsxSpreadsheetParser(private val file: File) {
             var letters = 0
             var digitsStarted = false
             reference.forEach { character ->
+                if (character == '$') return@forEach
                 if (character in 'A'..'Z' || character in 'a'..'z') {
                     if (digitsStarted) throw corrupt("单元格引用无效")
                     if (letters > 0 && value >= ImportLimits.MAX_COLUMNS) throw limitExceeded("列号超过限制")
@@ -455,11 +509,11 @@ internal class XlsxSpreadsheetParser(private val file: File) {
             input.use {
                 val factory = SAXParserFactory.newInstance().apply {
                     isNamespaceAware = true
-                    isXIncludeAware = false
-                    setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true)
-                    setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
-                    setFeature("http://xml.org/sax/features/external-general-entities", false)
-                    setFeature("http://xml.org/sax/features/external-parameter-entities", false)
+                    runCatching { isXIncludeAware = false }
+                    setFeatureIfSupported(XMLConstants.FEATURE_SECURE_PROCESSING, true)
+                    setFeatureIfSupported("http://apache.org/xml/features/disallow-doctype-decl", true)
+                    setFeatureIfSupported("http://xml.org/sax/features/external-general-entities", false)
+                    setFeatureIfSupported("http://xml.org/sax/features/external-parameter-entities", false)
                 }
                 val reader = factory.newSAXParser().xmlReader
                 reader.entityResolver = org.xml.sax.EntityResolver { _, _ ->
@@ -467,23 +521,25 @@ internal class XlsxSpreadsheetParser(private val file: File) {
                 }
                 reader.contentHandler = handler
                 reader.errorHandler = handler
-                reader.parse(InputSource(it))
+                reader.parse(InputSource(DoctypeRejectingInputStream(it)))
             }
         }
 
         fun normalizeZipPath(parent: String, target: String): String {
             if (target.contains('\\')) throw corrupt("ZIP 路径无效")
-            val source = if (target.startsWith('/')) target.drop(1) else "$parent/$target"
             val segments = ArrayDeque<String>()
-            source.split('/').forEach { part ->
+            if (!target.startsWith('/')) {
+                parent.split('/').filter(String::isNotBlank).forEach(segments::addLast)
+            }
+            target.trimStart('/').split('/').forEach { part ->
                 when (part) {
                     "", "." -> Unit
-                    ".." -> throw corrupt("ZIP 路径越界")
+                    ".." -> if (segments.isEmpty()) throw corrupt("ZIP 路径越界") else segments.removeLast()
                     else -> segments.addLast(part)
                 }
             }
             val normalized = segments.joinToString("/")
-            if (!normalized.startsWith("xl/")) throw corrupt("工作表路径越界")
+            if (normalized.isBlank()) throw corrupt("ZIP 路径无效")
             return normalized
         }
 
@@ -511,7 +567,30 @@ internal class XlsxSpreadsheetParser(private val file: File) {
             ?.let(::getValue)
 
         fun Attributes.relationshipId(): String? = (0 until length)
-            .firstOrNull { getLocalName(it) == "id" && (getQName(it) == "r:id" || getURI(it).contains("relationships")) }
+            .firstOrNull {
+                getLocalName(it) == "id" &&
+                    (getQName(it) == "r:id" || getURI(it).orEmpty().contains("relationships"))
+            }
             ?.let(::getValue)
+
+        fun SAXParserFactory.setFeatureIfSupported(name: String, value: Boolean) {
+            runCatching { setFeature(name, value) }
+        }
+
+        val DOCTYPE_MARKERS = listOf(
+            "<!DOCTYPE".toByteArray(StandardCharsets.US_ASCII),
+            "<!DOCTYPE".toByteArray(StandardCharsets.UTF_16BE),
+            "<!DOCTYPE".toByteArray(StandardCharsets.UTF_16LE),
+        )
+
+        fun ZipFile.findEntry(path: String): ZipEntry? = getEntry(path) ?: entries().asSequence()
+            .firstOrNull { it.name.equals(path, ignoreCase = true) }
+
+        fun ZipFile.workbookEntry(): ZipEntry? = findEntry(WORKBOOK_PATH) ?: entries().asSequence()
+            .firstOrNull { entry ->
+                !entry.isDirectory &&
+                    (entry.name.equals("workbook.xml", ignoreCase = true) ||
+                        entry.name.endsWith("/workbook.xml", ignoreCase = true))
+            }
     }
 }

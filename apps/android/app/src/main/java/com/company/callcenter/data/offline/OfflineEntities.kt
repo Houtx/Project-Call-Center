@@ -11,7 +11,10 @@ import androidx.room.PrimaryKey
         Index(value = ["phoneHash"], unique = true),
         Index(value = ["state", "queueOrder"]),
         Index(value = ["lastResult", "lastAttemptAt"]),
+        Index(value = ["lastResult", "queueOrder"]),
         Index(value = ["completedAt"]),
+        Index(value = ["queueOrder"]),
+        Index(value = ["importBatchId"]),
     ],
 )
 data class OfflineContactEntity(
@@ -27,6 +30,26 @@ data class OfflineContactEntity(
     val lastAttemptAt: Long?,
     val completedAt: Long?,
     val queueOrder: Long,
+    val importBatchId: String?,
+)
+
+@Entity(
+    tableName = "offline_import_batches",
+    indices = [Index(value = ["createdAt"])],
+)
+data class OfflineImportBatchEntity(
+    @PrimaryKey val id: String,
+    val displayName: String,
+    val source: String,
+    val sheetName: String?,
+    val columnLetter: String?,
+    val requestedStartRow: Int?,
+    val requestedEndRow: Int?,
+    val skipHeader: Boolean,
+    val createdAt: Long,
+    val addedCount: Int,
+    val duplicateCount: Int,
+    val invalidCount: Int,
 )
 
 @Entity(

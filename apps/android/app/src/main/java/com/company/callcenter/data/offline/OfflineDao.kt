@@ -10,8 +10,50 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface OfflineDao {
-    @Query("SELECT * FROM offline_contacts ORDER BY queueOrder ASC")
-    fun observeContacts(): Flow<List<OfflineContactEntity>>
+    @Query(
+        """
+        SELECT * FROM offline_contacts
+        WHERE state IN ('READY', 'RETRY')
+        ORDER BY queueOrder ASC
+        LIMIT :limit
+        """,
+    )
+    fun observePendingContacts(limit: Int): Flow<List<OfflineContactEntity>>
+
+    @Query("SELECT COUNT(*) FROM offline_contacts WHERE state IN ('READY', 'RETRY')")
+    fun observePendingContactCount(): Flow<Int>
+
+    @Query(
+        """
+        SELECT * FROM offline_contacts
+        WHERE lastResult = 'NOT_CONNECTED'
+          AND (:startMillis IS NULL OR lastAttemptAt >= :startMillis)
+          AND (:endExclusiveMillis IS NULL OR lastAttemptAt < :endExclusiveMillis)
+        ORDER BY queueOrder ASC
+        LIMIT :limit
+        """,
+    )
+    fun observeNotConnectedContacts(
+        startMillis: Long?,
+        endExclusiveMillis: Long?,
+        limit: Int,
+    ): Flow<List<OfflineContactEntity>>
+
+    @Query(
+        """
+        SELECT COUNT(*) FROM offline_contacts
+        WHERE lastResult = 'NOT_CONNECTED'
+          AND (:startMillis IS NULL OR lastAttemptAt >= :startMillis)
+          AND (:endExclusiveMillis IS NULL OR lastAttemptAt < :endExclusiveMillis)
+        """,
+    )
+    fun observeNotConnectedContactCount(startMillis: Long?, endExclusiveMillis: Long?): Flow<Int>
+
+    @Query("SELECT * FROM offline_contacts ORDER BY queueOrder ASC LIMIT :limit")
+    fun observeAllContacts(limit: Int): Flow<List<OfflineContactEntity>>
+
+    @Query("SELECT COUNT(*) FROM offline_contacts")
+    fun observeAllContactCount(): Flow<Int>
 
     @Query("SELECT * FROM offline_contacts WHERE id = :contactId")
     suspend fun contact(contactId: String): OfflineContactEntity?
@@ -21,6 +63,41 @@ interface OfflineDao {
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertContacts(items: List<OfflineContactEntity>): List<Long>
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertImportBatch(item: OfflineImportBatchEntity)
+
+    @Query(
+        """
+        UPDATE offline_import_batches
+        SET addedCount = :addedCount, duplicateCount = :duplicateCount, invalidCount = :invalidCount
+        WHERE id = :batchId
+        """,
+    )
+    suspend fun finishImportBatch(batchId: String, addedCount: Int, duplicateCount: Int, invalidCount: Int)
+
+    @Query("SELECT * FROM offline_import_batches ORDER BY createdAt DESC")
+    fun observeImportBatches(): Flow<List<OfflineImportBatchEntity>>
+
+    @Query("SELECT COUNT(*) FROM offline_contacts WHERE importBatchId = :batchId")
+    suspend fun countContactsForImportBatch(batchId: String): Int
+
+    @Query(
+        """
+        SELECT EXISTS(
+            SELECT 1 FROM offline_pending_calls pending
+            INNER JOIN offline_contacts contact ON contact.id = pending.contactId
+            WHERE contact.importBatchId = :batchId
+        )
+        """,
+    )
+    suspend fun hasPendingCallForImportBatch(batchId: String): Boolean
+
+    @Query("DELETE FROM offline_contacts WHERE importBatchId = :batchId")
+    suspend fun deleteContactsForImportBatch(batchId: String): Int
+
+    @Query("DELETE FROM offline_import_batches WHERE id = :batchId")
+    suspend fun deleteImportBatch(batchId: String): Int
 
     @Query("SELECT * FROM offline_pending_calls ORDER BY initiatedAt ASC")
     suspend fun pendingCalls(): List<OfflinePendingCallEntity>
@@ -223,10 +300,14 @@ interface OfflineDao {
     @Query("DELETE FROM offline_call_history")
     suspend fun clearHistory()
 
+    @Query("DELETE FROM offline_import_batches")
+    suspend fun clearImportBatches()
+
     @Transaction
     suspend fun clearAll() {
         clearPendingCalls()
         clearHistory()
         clearContacts()
+        clearImportBatches()
     }
 }

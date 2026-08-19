@@ -11,6 +11,8 @@ In online mode, the API is the source of truth for customer ownership, suppressi
 
 Independent mode has a separate trust boundary. It never logs in to or synchronizes with the CRM API. Imported contacts, queue state and call history live in a dedicated Room database and cannot be copied into the online cache. Phone numbers and optional names are encrypted with an Android Keystore-backed AES-GCM key, while a separate device-local HMAC supports deduplication. A PBKDF2 verifier gates the local UI; backgrounding the app locks access after one minute. The system dialer and system CallLog remain outside this encrypted boundary.
 
+Independent-mode task queries execute their state/date predicates and counts in Room and return at most 100 contacts. Queue-order invalidation refills that window after a call without decrypting the complete contact database. Import operations create a durable batch record and tag only newly inserted contacts; batch deletion, call authorization and call settlement are serialized, and deletion is rejected while a matching call is pending. Database migration `1 -> 2` preserves existing untagged contacts and adds the batch tables and task indices without destructive fallback.
+
 The Android system CallLog is an operational observation, not carrier-grade evidence. Only CallLog rows matched to an API-created call attempt may be uploaded. Personal calls and contacts are outside the data boundary.
 
 ## Runtime components
@@ -53,7 +55,7 @@ Unknown calls remain visible in the attempt count and data-completeness metric b
 
 Independent mode applies the same `duration > 0`, zero-duration and 24-hour unknown definitions locally. It permits one pending attempt at a time, moves a non-connected contact to the end of the queue and defaults to two attempts. The user may change the local limit from 1-10; existing retry/exhausted states are reconciled to the new limit.
 
-Independent-mode imports support bounded XLSX, CSV, TSV and explicit paste input. Spreadsheet files are copied only to the app-private cache while a preview session is active, capped by file/ZIP/XML/row/column/cell limits and deleted on completion, failure, lock, mode change or next process initialization. Macro, encrypted and legacy OLE workbooks are rejected.
+Independent-mode imports support bounded XLSX, XLSM, CSV, TSV and explicit paste input. The user selects only a worksheet and phone column; the first 20 raw rows are classified before import, and normalized values are accepted by 11-digit length rather than carrier-prefix rules. Spreadsheet files are copied only to the app-private cache while a preview session is active, capped by file/ZIP/XML/row/column/cell limits and deleted on completion, failure, lock, mode change or next process initialization. Macros are never executed; encrypted and legacy OLE workbooks are rejected.
 
 Optional usage telemetry is compile-time disabled unless an HTTPS endpoint is configured, remains opt-in at runtime and never blocks calling. It sends at most one small aggregate per UTC day using a random telemetry identifier that is unrelated to online device/session identifiers. Payloads exclude phone numbers, names, SIM data, server addresses, filenames, customer IDs and call-level timestamps.
 

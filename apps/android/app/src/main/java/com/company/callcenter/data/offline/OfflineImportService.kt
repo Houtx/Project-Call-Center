@@ -8,6 +8,7 @@ import com.company.callcenter.offline.importing.PastePhoneParser
 import com.company.callcenter.offline.importing.PhoneNumberNormalizer
 import com.company.callcenter.offline.importing.SpreadsheetPreview
 import com.company.callcenter.offline.importing.SpreadsheetReader
+import com.company.callcenter.offline.importing.SpreadsheetCellPreview
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -23,6 +24,11 @@ data class OfflineSpreadsheetSession internal constructor(
 data class OfflineSpreadsheetImportDraft(
     val records: List<OfflineImportContact>,
     val invalidCount: Int,
+)
+
+data class OfflineSpreadsheetRowRange(
+    val startRow: Int = 1,
+    val endRowInclusive: Int? = null,
 )
 
 class OfflineImportService(
@@ -64,8 +70,8 @@ class OfflineImportService(
         session: OfflineSpreadsheetSession,
         sheetId: String,
         phoneColumnIndex: Int,
-        nameColumnIndex: Int?,
         skipHeader: Boolean,
+        rowRange: OfflineSpreadsheetRowRange,
     ): OfflineSpreadsheetImportDraft = withContext(Dispatchers.IO) {
         check(session.file.isFile) { "导入文件已失效，请重新选择" }
         val phoneCells = reader.readColumn(
@@ -73,16 +79,9 @@ class OfflineImportService(
             sheetId = sheetId,
             columnIndex = phoneColumnIndex,
             skipHeader = skipHeader,
+            startRow = rowRange.startRow,
+            endRowInclusive = rowRange.endRowInclusive,
         )
-        val namesByRow = nameColumnIndex?.let { columnIndex ->
-            reader.readColumn(
-                file = session.file,
-                sheetId = sheetId,
-                columnIndex = columnIndex,
-                skipHeader = skipHeader,
-            ).cells.associate { it.rowNumber to it.value.trim().take(MAX_NAME_CHARS) }
-        }.orEmpty()
-
         var invalid = 0
         val records = phoneCells.cells.mapNotNull { cell ->
             val phone = PhoneNumberNormalizer.normalize(cell.value)
@@ -90,10 +89,29 @@ class OfflineImportService(
                 invalid += 1
                 null
             } else {
-                OfflineImportContact(phone = phone, name = namesByRow[cell.rowNumber]?.takeIf(String::isNotBlank))
+                OfflineImportContact(phone = phone, name = null)
             }
         }
         OfflineSpreadsheetImportDraft(records, invalid)
+    }
+
+    suspend fun previewSpreadsheetRange(
+        session: OfflineSpreadsheetSession,
+        sheetId: String,
+        phoneColumnIndex: Int,
+        skipHeader: Boolean,
+        rowRange: OfflineSpreadsheetRowRange,
+    ): List<SpreadsheetCellPreview> = withContext(Dispatchers.IO) {
+        check(session.file.isFile) { "导入文件已失效，请重新选择" }
+        reader.readColumn(
+            file = session.file,
+            sheetId = sheetId,
+            columnIndex = phoneColumnIndex,
+            skipHeader = skipHeader,
+            startRow = rowRange.startRow,
+            endRowInclusive = rowRange.endRowInclusive,
+            limit = PREVIEW_ROWS,
+        ).cells.map { SpreadsheetCellPreview(it.rowNumber, it.value) }
     }
 
     fun parsePaste(value: String): PastePhoneParseResult = PastePhoneParser.parse(value)
@@ -144,7 +162,7 @@ class OfflineImportService(
     private companion object {
         const val IMPORT_DIRECTORY = "offline-imports"
         const val MAX_FILE_BYTES = 25L * 1024L * 1024L
-        const val MAX_NAME_CHARS = 100
         const val TEMP_FILE_TTL_MILLIS = 24L * 60L * 60L * 1_000L
+        const val PREVIEW_ROWS = 20
     }
 }

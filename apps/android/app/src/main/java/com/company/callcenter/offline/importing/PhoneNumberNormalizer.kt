@@ -4,10 +4,10 @@ import java.math.BigDecimal
 import java.text.Normalizer
 
 object PhoneNumberNormalizer {
-    private val mainlandMobile = Regex("^1[3-9]\\d{9}$")
+    private val elevenDigits = Regex("^\\d{11}$")
     private val numericCell = Regex("^(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][+-]?\\d+)?$")
 
-    /** Returns an 11-digit mainland China mobile number, or null when the value is invalid. */
+    /** Returns an 11-digit phone number, or null when the normalized value has another length. */
     fun normalize(value: String): String? {
         if (value.isBlank() || value.length > ImportLimits.MAX_CELL_CHARS) return null
         val normalized = Normalizer.normalize(value, Normalizer.Form.NFKC)
@@ -30,7 +30,7 @@ object PhoneNumberNormalizer {
             numericCell.matches(withoutCountryCode) -> integralNumericValue(withoutCountryCode) ?: return null
             else -> return null
         }
-        return digits.takeIf(mainlandMobile::matches)
+        return digits.takeIf(elevenDigits::matches)
     }
 
     private fun integralNumericValue(value: String): String? {

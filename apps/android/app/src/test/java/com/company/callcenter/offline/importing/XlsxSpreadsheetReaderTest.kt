@@ -51,8 +51,9 @@ class XlsxSpreadsheetReaderTest {
         val phoneColumn = preview.sheets.first().columns.single { it.index == 2 }
         assertEquals("C", phoneColumn.letter)
         assertEquals("手机号", phoneColumn.header)
-        assertEquals(listOf("13800138000", "13900139000", "13700137000"), phoneColumn.samples)
-        assertEquals(1.0, phoneColumn.validRate, 0.0)
+        assertEquals(listOf("手机号", "13800138000", "13900139000", "13700137000"), phoneColumn.samples)
+        assertEquals(true, phoneColumn.suggestsHeader)
+        assertEquals(0.75, phoneColumn.validRate, 0.0)
 
         val firstSheet = preview.sheets.first()
         val data = reader.readColumn(file, firstSheet.id, 2, skipHeader = true)
@@ -64,26 +65,26 @@ class XlsxSpreadsheetReaderTest {
     }
 
     @Test
-    fun `rejects missing shared string and columns beyond limit`() {
+    fun `tolerates missing shared string values and rejects columns beyond the Excel limit`() {
         val badShared = temporaryFolder.newFile("bad-shared.xlsx")
         writeWorkbook(
             badShared,
             sharedStrings = listOf("手机号"),
             sheets = listOf(TestSheet("数据", sheetWithCell("A1", "s", "99"))),
         )
-        assertReason(SpreadsheetFailureReason.CORRUPT_FILE) { reader.preview(badShared) }
+        assertEquals("", reader.preview(badShared).sheets.single().columns.single().samples.single())
 
         val tooWide = temporaryFolder.newFile("wide.xlsx")
         writeWorkbook(
             tooWide,
             sharedStrings = null,
-            sheets = listOf(TestSheet("数据", sheetWithCell("IW1", null, "13800138000"))),
+            sheets = listOf(TestSheet("数据", sheetWithCell("XFE1", null, "13800138000"))),
         )
         assertReason(SpreadsheetFailureReason.LIMIT_EXCEEDED) { reader.preview(tooWide) }
     }
 
     @Test
-    fun `rejects excessive row number and malformed XML`() {
+    fun `accepts sparse physical row numbers and rejects malformed XML`() {
         val rows = temporaryFolder.newFile("rows.xlsx")
         writeWorkbook(
             rows,
@@ -97,7 +98,7 @@ class XlsxSpreadsheetReaderTest {
                 ),
             ),
         )
-        assertReason(SpreadsheetFailureReason.LIMIT_EXCEEDED) { reader.preview(rows) }
+        assertEquals("13800138000", reader.preview(rows).sheets.single().columns.single().samples.single())
 
         val malformed = temporaryFolder.newFile("malformed.xlsx")
         writeWorkbook(
@@ -106,6 +107,39 @@ class XlsxSpreadsheetReaderTest {
             sheets = listOf(TestSheet("数据", "<worksheet><sheetData><row>")),
         )
         assertReason(SpreadsheetFailureReason.CORRUPT_FILE) { reader.preview(malformed) }
+    }
+
+    @Test
+    fun `reads inclusive ranges using visible Excel row numbers`() {
+        val file = temporaryFolder.newFile("range.xlsx")
+        writeWorkbook(
+            file,
+            sharedStrings = null,
+            sheets = listOf(
+                TestSheet(
+                    "数据",
+                    "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>" +
+                        "<row r=\"1\"><c r=\"A1\" t=\"inlineStr\"><is><t>手机号</t></is></c></row>" +
+                        "<row r=\"1000\"><c r=\"A1000\"><v>13800138000</v></c></row>" +
+                        "<row r=\"1001\"><c r=\"A1001\"><v>13900139000</v></c></row>" +
+                        "<row r=\"2000\"><c r=\"A2000\"><v>13700137000</v></c></row>" +
+                        "</sheetData></worksheet>",
+                ),
+            ),
+        )
+
+        val sheet = reader.preview(file).sheets.single()
+        assertEquals(2000, sheet.lastRowNumber)
+        val data = reader.readColumn(
+            file = file,
+            sheetId = sheet.id,
+            columnIndex = 0,
+            skipHeader = true,
+            startRow = 1000,
+            endRowInclusive = 1999,
+        )
+        assertEquals(listOf(1000, 1001), data.cells.map { it.rowNumber })
+        assertEquals(listOf("13800138000", "13900139000"), data.cells.map { it.value })
     }
 
     @Test
@@ -139,6 +173,31 @@ class XlsxSpreadsheetReaderTest {
             workbookPrefix = "<!DOCTYPE workbook [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]>",
         )
         assertReason(SpreadsheetFailureReason.CORRUPT_FILE) { reader.preview(file) }
+    }
+
+    @Test
+    fun `accepts macro content type case differences and missing relationship metadata`() {
+        val file = temporaryFolder.newFile("mobile-export.xlsm")
+        ZipOutputStream(file.outputStream()).use { zip ->
+            zip.textEntry(
+                "[Content_Types].xml",
+                "<Types><Override PartName=\"/XL/WORKBOOK.XML\" ContentType=\"application/vnd.ms-excel.sheet.macroEnabled.main+xml\"/></Types>",
+            )
+            zip.textEntry(
+                "XL/WORKBOOK.XML",
+                "<workbook><sheets><sheet name=\"手机导出\" sheetId=\"1\"/></sheets></workbook>",
+            )
+            zip.textEntry(
+                "XL/WORKSHEETS/SHEET1.XML",
+                "<worksheet><sheetData><row r=\"9\"><c r=\"D9\" t=\"inlineStr\"><is><t>13800138000</t></is></c></row></sheetData></worksheet>",
+            )
+            zip.textEntry("XL/VBAPROJECT.BIN", "ignored")
+        }
+
+        val preview = reader.preview(file)
+        assertEquals("手机导出", preview.sheets.single().name)
+        assertEquals("13800138000", preview.sheets.single().columns.single().samples.single())
+        assertEquals(3, preview.sheets.single().columns.single().index)
     }
 
     private fun writeWorkbook(

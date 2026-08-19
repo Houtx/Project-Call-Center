@@ -10,13 +10,21 @@ import com.company.callcenter.data.DialAuthorization
 import com.company.callcenter.data.offline.OfflineCallRecord
 import com.company.callcenter.data.offline.OfflineCleanupResult
 import com.company.callcenter.data.offline.OfflineContact
-import com.company.callcenter.data.offline.OfflineContactState
+import com.company.callcenter.data.offline.OfflineDateRanges
+import com.company.callcenter.data.offline.OfflineImportBatch
+import com.company.callcenter.data.offline.OfflineImportMetadata
 import com.company.callcenter.data.offline.OfflineImportResult
 import com.company.callcenter.data.offline.OfflineImportService
+import com.company.callcenter.data.offline.OfflineImportSource
+import com.company.callcenter.data.offline.OfflineMissedDateFilter
+import com.company.callcenter.data.offline.OfflineMissedDatePreset
 import com.company.callcenter.data.offline.OfflineSpreadsheetSession
+import com.company.callcenter.data.offline.OfflineSpreadsheetRowRange
 import com.company.callcenter.data.offline.OfflineRepository
 import com.company.callcenter.data.offline.OfflineTaskFilter
+import com.company.callcenter.data.offline.OfflineTaskPage
 import com.company.callcenter.offline.importing.PastePhoneParseResult
+import com.company.callcenter.offline.importing.SpreadsheetCellPreview
 import com.company.callcenter.offline.importing.SpreadsheetSheetPreview
 import com.company.callcenter.telephony.SimCallManager
 import com.company.callcenter.telephony.SimDialMode
@@ -32,6 +40,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
@@ -43,6 +52,17 @@ data class OfflineCleanupConfirmation(
     val contactCount: Int,
 )
 
+data class OfflineImportDeleteConfirmation(
+    val batchId: String,
+    val displayName: String,
+    val contactCount: Int,
+)
+
+enum class OfflineImportRangeMode {
+    ALL,
+    CUSTOM,
+}
+
 sealed interface OfflineImportUiState {
     data object Idle : OfflineImportUiState
     data object Loading : OfflineImportUiState
@@ -50,11 +70,28 @@ sealed interface OfflineImportUiState {
         val session: OfflineSpreadsheetSession,
         val selectedSheetId: String,
         val phoneColumnIndex: Int,
-        val nameColumnIndex: Int? = null,
-        val skipHeader: Boolean = true,
+        val skipHeader: Boolean = false,
+        val rangeMode: OfflineImportRangeMode = OfflineImportRangeMode.ALL,
+        val startRowText: String = "1",
+        val endRowText: String,
+        val previewRows: List<SpreadsheetCellPreview>,
+        val previewLoading: Boolean = false,
+        val rangeError: String? = null,
     ) : OfflineImportUiState {
         val selectedSheet: SpreadsheetSheetPreview
             get() = session.preview.sheets.first { it.id == selectedSheetId }
+
+        fun selectedRange(): OfflineSpreadsheetRowRange? {
+            return when (rangeMode) {
+                OfflineImportRangeMode.ALL -> OfflineSpreadsheetRowRange()
+                OfflineImportRangeMode.CUSTOM -> {
+                    val start = startRowText.toIntOrNull() ?: return null
+                    val end = endRowText.toIntOrNull() ?: return null
+                    if (start < 1 || end < start || end > selectedSheet.lastRowNumber) null
+                    else OfflineSpreadsheetRowRange(start, end)
+                }
+            }
+        }
     }
     data class PastePreview(
         val source: String,
@@ -66,10 +103,11 @@ sealed interface OfflineImportUiState {
 data class OfflineUiState(
     val configured: Boolean = false,
     val unlocked: Boolean = false,
-    val contacts: List<OfflineContact> = emptyList(),
-    val filteredContacts: List<OfflineContact> = emptyList(),
+    val taskContacts: List<OfflineContact> = emptyList(),
+    val taskTotalCount: Int = 0,
     val history: List<OfflineCallRecord> = emptyList(),
     val taskFilter: OfflineTaskFilter = OfflineTaskFilter.PENDING,
+    val missedDateFilter: OfflineMissedDateFilter = OfflineMissedDateFilter(),
     val statistics: CallStatistics = CallStatistics(),
     val statisticsRange: CallStatisticsRange = CallStatisticsRange.TODAY,
     val maximumAttempts: Int = 2,
@@ -82,6 +120,8 @@ data class OfflineUiState(
     val unlockRetryAfterSeconds: Long = 0,
     val cleanupConfirmation: OfflineCleanupConfirmation? = null,
     val importState: OfflineImportUiState = OfflineImportUiState.Idle,
+    val importBatches: List<OfflineImportBatch> = emptyList(),
+    val importDeleteConfirmation: OfflineImportDeleteConfirmation? = null,
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -92,23 +132,42 @@ class OfflineViewModel(
 ) : ViewModel() {
     private val transient = MutableStateFlow(OfflineUiState(simDial = simCallManager.state.value))
     private val taskFilter = MutableStateFlow(OfflineTaskFilter.PENDING)
+    private val missedDateFilter = MutableStateFlow(OfflineMissedDateFilter())
     private val statisticsRange = MutableStateFlow(CallStatisticsRange.TODAY)
     private val statistics = statisticsRange.flatMapLatest(repository::statistics)
     private val dialChannel = Channel<DialAuthorization>(capacity = Channel.BUFFERED)
     val dialEvents = dialChannel.receiveAsFlow()
     private var unlockCountdownJob: Job? = null
+    private var importPreviewJob: Job? = null
+
+    private data class TaskSelection(
+        val filter: OfflineTaskFilter,
+        val dateFilter: OfflineMissedDateFilter,
+    )
+
+    private data class TaskData(
+        val selection: TaskSelection,
+        val page: OfflineTaskPage,
+    )
+
+    private val taskSelection = combine(taskFilter, missedDateFilter, ::TaskSelection)
+    private val taskData = taskSelection.flatMapLatest { selection ->
+        repository.taskPage(selection.filter, selection.dateFilter).map { page -> TaskData(selection, page) }
+    }
 
     private data class OfflineData(
-        val contacts: List<OfflineContact>,
+        val tasks: TaskData,
         val history: List<OfflineCallRecord>,
         val pending: Boolean,
+        val importBatches: List<OfflineImportBatch>,
     )
 
     private val offlineData = combine(
-        repository.contacts,
+        taskData,
         repository.history,
         repository.hasPendingCall,
-    ) { contacts, history, pending -> OfflineData(contacts, history, pending) }
+        repository.importBatches,
+    ) { tasks, history, pending, batches -> OfflineData(tasks, history, pending, batches) }
 
     private data class OfflineSettings(
         val configured: Boolean,
@@ -125,13 +184,12 @@ class OfflineViewModel(
     }
 
     private data class ViewOptions(
-        val filter: OfflineTaskFilter,
         val range: CallStatisticsRange,
         val statistics: CallStatistics,
     )
 
-    private val options = combine(taskFilter, statisticsRange, statistics) { filter, range, stats ->
-        ViewOptions(filter, range, stats)
+    private val options = combine(statisticsRange, statistics) { range, stats ->
+        ViewOptions(range, stats)
     }
 
     val state: StateFlow<OfflineUiState> = combine(
@@ -143,14 +201,16 @@ class OfflineViewModel(
         current.copy(
             configured = settings.configured,
             unlocked = settings.unlocked,
-            contacts = data.contacts,
-            filteredContacts = data.contacts.filterFor(options.filter),
+            taskContacts = data.tasks.page.contacts,
+            taskTotalCount = data.tasks.page.totalCount,
             history = data.history,
             hasPendingCall = data.pending,
             maximumAttempts = settings.maximumAttempts,
-            taskFilter = options.filter,
+            taskFilter = data.tasks.selection.filter,
+            missedDateFilter = data.tasks.selection.dateFilter,
             statisticsRange = options.range,
             statistics = options.statistics,
+            importBatches = data.importBatches,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), transient.value)
 
@@ -249,15 +309,14 @@ class OfflineViewModel(
                 compareBy<com.company.callcenter.offline.importing.SpreadsheetColumnPreview> { it.validPhoneCount }
                     .thenBy { it.validRate },
             ) ?: error("所选工作表没有可导入的列")
-            val suggestedName = sheet.columns.firstOrNull { column ->
-                column.index != suggestedPhone.index && column.header.orEmpty().containsNameKeyword()
-            }?.index
             transient.value = transient.value.copy(
                 importState = OfflineImportUiState.Spreadsheet(
                     session = session,
                     selectedSheetId = sheet.id,
                     phoneColumnIndex = suggestedPhone.index,
-                    nameColumnIndex = suggestedName,
+                    skipHeader = suggestedPhone.suggestsHeader,
+                    endRowText = sheet.lastRowNumber.toString(),
+                    previewRows = suggestedPhone.previewRows,
                 ),
             )
         }
@@ -270,54 +329,90 @@ class OfflineViewModel(
             compareBy<com.company.callcenter.offline.importing.SpreadsheetColumnPreview> { it.validPhoneCount }
                 .thenBy { it.validRate },
         ) ?: return
-        transient.value = transient.value.copy(
-            importState = current.copy(
+        updateSpreadsheetState(
+            current.copy(
                 selectedSheetId = sheetId,
                 phoneColumnIndex = phoneColumn.index,
-                nameColumnIndex = sheet.columns.firstOrNull { column ->
-                    column.index != phoneColumn.index && column.header.orEmpty().containsNameKeyword()
-                }?.index,
+                skipHeader = phoneColumn.suggestsHeader,
+                startRowText = "1",
+                endRowText = sheet.lastRowNumber.toString(),
+                previewRows = phoneColumn.previewRows,
+                previewLoading = false,
+                rangeError = null,
             ),
+            refreshCustomPreview = current.rangeMode == OfflineImportRangeMode.CUSTOM,
         )
     }
 
     fun selectPhoneColumn(columnIndex: Int) {
         val current = transient.value.importState as? OfflineImportUiState.Spreadsheet ?: return
         if (current.selectedSheet.columns.none { it.index == columnIndex }) return
-        transient.value = transient.value.copy(
-            importState = current.copy(
+        val column = current.selectedSheet.columns.first { it.index == columnIndex }
+        updateSpreadsheetState(
+            current.copy(
                 phoneColumnIndex = columnIndex,
-                nameColumnIndex = current.nameColumnIndex?.takeIf { it != columnIndex },
+                skipHeader = column.suggestsHeader,
+                previewRows = column.previewRows,
+                rangeError = null,
             ),
+            refreshCustomPreview = true,
         )
-    }
-
-    fun selectNameColumn(columnIndex: Int?) {
-        val current = transient.value.importState as? OfflineImportUiState.Spreadsheet ?: return
-        if (columnIndex != null && (
-                columnIndex == current.phoneColumnIndex || current.selectedSheet.columns.none { it.index == columnIndex }
-            )
-        ) return
-        transient.value = transient.value.copy(importState = current.copy(nameColumnIndex = columnIndex))
     }
 
     fun setImportSkipsHeader(skip: Boolean) {
         val current = transient.value.importState as? OfflineImportUiState.Spreadsheet ?: return
-        transient.value = transient.value.copy(importState = current.copy(skipHeader = skip))
+        updateSpreadsheetState(current.copy(skipHeader = skip), refreshCustomPreview = true)
+    }
+
+    fun setImportRangeMode(mode: OfflineImportRangeMode) {
+        val current = transient.value.importState as? OfflineImportUiState.Spreadsheet ?: return
+        val selectedColumn = current.selectedSheet.columns.first { it.index == current.phoneColumnIndex }
+        val updated = current.copy(
+            rangeMode = mode,
+            startRowText = if (mode == OfflineImportRangeMode.CUSTOM) current.startRowText else "1",
+            endRowText = current.selectedSheet.lastRowNumber.toString(),
+            previewRows = selectedColumn.previewRows,
+            rangeError = null,
+        )
+        updateSpreadsheetState(updated, refreshCustomPreview = mode == OfflineImportRangeMode.CUSTOM)
+    }
+
+    fun setImportStartRow(value: String) {
+        updateImportRangeText(start = value.filter(Char::isDigit).take(MAX_ROW_INPUT_CHARS), end = null)
+    }
+
+    fun setImportEndRow(value: String) {
+        updateImportRangeText(start = null, end = value.filter(Char::isDigit).take(MAX_ROW_INPUT_CHARS))
     }
 
     fun confirmSpreadsheetImport() {
         val current = transient.value.importState as? OfflineImportUiState.Spreadsheet ?: return
         launchBusy {
             try {
+                val rowRange = current.selectedRange() ?: error(importRangeError(current))
                 val draft = importService.readSpreadsheet(
                     session = current.session,
                     sheetId = current.selectedSheetId,
                     phoneColumnIndex = current.phoneColumnIndex,
-                    nameColumnIndex = current.nameColumnIndex,
                     skipHeader = current.skipHeader,
+                    rowRange = rowRange,
                 )
-                val result = repository.importContacts(draft.records, draft.invalidCount)
+                val column = current.selectedSheet.columns.first { it.index == current.phoneColumnIndex }
+                val result = repository.importContacts(
+                    records = draft.records,
+                    invalidCount = draft.invalidCount,
+                    metadata = OfflineImportMetadata(
+                        displayName = current.session.displayName,
+                        source = OfflineImportSource.SPREADSHEET,
+                        sheetName = current.selectedSheet.name,
+                        columnLetter = column.letter,
+                        requestedStartRow = rowRange.startRow.takeIf { current.rangeMode == OfflineImportRangeMode.CUSTOM },
+                        requestedEndRow = rowRange.endRowInclusive.takeIf {
+                            current.rangeMode == OfflineImportRangeMode.CUSTOM
+                        },
+                        skipHeader = current.skipHeader,
+                    ),
+                )
                 transient.value = transient.value.copy(importState = OfflineImportUiState.Completed(result))
             } catch (failure: Throwable) {
                 transient.value = transient.value.copy(importState = OfflineImportUiState.Idle)
@@ -345,11 +440,14 @@ class OfflineViewModel(
                     com.company.callcenter.data.offline.OfflineImportContact(phone)
                 },
                 invalidCount = current.parsed.invalidCount + current.parsed.blankCount,
+                duplicateCount = current.parsed.duplicateCount,
+                metadata = OfflineImportMetadata(
+                    displayName = "手动粘贴",
+                    source = OfflineImportSource.PASTE,
+                ),
             )
             transient.value = transient.value.copy(
-                importState = OfflineImportUiState.Completed(
-                    imported.copy(duplicateCount = imported.duplicateCount + current.parsed.duplicateCount),
-                ),
+                importState = OfflineImportUiState.Completed(imported),
             )
         }
     }
@@ -375,6 +473,19 @@ class OfflineViewModel(
 
     fun setTaskFilter(filter: OfflineTaskFilter) {
         taskFilter.value = filter
+    }
+
+    fun setMissedDatePreset(preset: OfflineMissedDatePreset) {
+        when (preset) {
+            OfflineMissedDatePreset.ALL -> missedDateFilter.value = OfflineMissedDateFilter()
+            OfflineMissedDatePreset.THIS_WEEK ->
+                missedDateFilter.value = OfflineDateRanges.thisWeek(System.currentTimeMillis())
+            OfflineMissedDatePreset.CUSTOM -> Unit
+        }
+    }
+
+    fun setCustomMissedDateRange(startUtcMillis: Long, endUtcMillis: Long) {
+        missedDateFilter.value = OfflineDateRanges.custom(startUtcMillis, endUtcMillis)
     }
 
     fun setStatisticsRange(range: CallStatisticsRange) {
@@ -442,6 +553,33 @@ class OfflineViewModel(
         }
     }
 
+    fun requestDeleteImport(batch: OfflineImportBatch) {
+        launchBusy {
+            transient.value = transient.value.copy(
+                importDeleteConfirmation = OfflineImportDeleteConfirmation(
+                    batchId = batch.id,
+                    displayName = batch.displayName,
+                    contactCount = repository.countContactsForImportBatch(batch.id),
+                ),
+            )
+        }
+    }
+
+    fun cancelDeleteImport() {
+        transient.value = transient.value.copy(importDeleteConfirmation = null)
+    }
+
+    fun confirmDeleteImport() {
+        val confirmation = state.value.importDeleteConfirmation ?: return
+        launchBusy {
+            val result = repository.deleteImportBatch(confirmation.batchId)
+            transient.value = transient.value.copy(
+                importDeleteConfirmation = null,
+                message = "已删除这次导入的 ${result.deletedContacts} 条现存数据及关联通话记录",
+            )
+        }
+    }
+
     fun clearError() {
         transient.value = transient.value.copy(error = null)
     }
@@ -469,9 +607,82 @@ class OfflineViewModel(
     }
 
     private fun closeImportSession() {
+        importPreviewJob?.cancel()
+        importPreviewJob = null
         val session = (transient.value.importState as? OfflineImportUiState.Spreadsheet)?.session
         importService.close(session)
     }
+
+    private fun updateImportRangeText(start: String?, end: String?) {
+        val current = transient.value.importState as? OfflineImportUiState.Spreadsheet ?: return
+        val updated = current.copy(
+            startRowText = start ?: current.startRowText,
+            endRowText = end ?: current.endRowText,
+        )
+        updateSpreadsheetState(updated, refreshCustomPreview = true)
+    }
+
+    private fun updateSpreadsheetState(
+        state: OfflineImportUiState.Spreadsheet,
+        refreshCustomPreview: Boolean,
+    ) {
+        val error: String? = if (state.selectedRange() == null) importRangeError(state) else null
+        val updated = state.copy(rangeError = error, previewLoading = false)
+        transient.value = transient.value.copy(importState = updated)
+        importPreviewJob?.cancel()
+        if (refreshCustomPreview && updated.rangeMode == OfflineImportRangeMode.CUSTOM && error == null) {
+            importPreviewJob = viewModelScope.launch {
+                delay(IMPORT_PREVIEW_DEBOUNCE_MS)
+                val latest = transient.value.importState as? OfflineImportUiState.Spreadsheet ?: return@launch
+                if (!latest.sameSelection(updated)) return@launch
+                val range = latest.selectedRange() ?: return@launch
+                transient.value = transient.value.copy(importState = latest.copy(previewLoading = true))
+                try {
+                    val rows = importService.previewSpreadsheetRange(
+                        session = latest.session,
+                        sheetId = latest.selectedSheetId,
+                        phoneColumnIndex = latest.phoneColumnIndex,
+                        skipHeader = latest.skipHeader,
+                        rowRange = range,
+                    )
+                    val current = transient.value.importState as? OfflineImportUiState.Spreadsheet ?: return@launch
+                    if (current.sameSelection(latest)) {
+                        transient.value = transient.value.copy(
+                            importState = current.copy(previewRows = rows, previewLoading = false, rangeError = null),
+                        )
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (failure: Throwable) {
+                    val current = transient.value.importState as? OfflineImportUiState.Spreadsheet ?: return@launch
+                    if (current.sameSelection(latest)) {
+                        transient.value = transient.value.copy(
+                            importState = current.copy(
+                                previewLoading = false,
+                                rangeError = failure.message ?: "无法预览所选范围",
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun importRangeError(state: OfflineImportUiState.Spreadsheet): String {
+        val start = state.startRowText.toIntOrNull() ?: return "请输入起始行"
+        val end = state.endRowText.toIntOrNull() ?: return "请输入结束行"
+        return when {
+            start < 1 -> "起始行必须大于 0"
+            end < start -> "结束行不能早于起始行"
+            end > state.selectedSheet.lastRowNumber -> "结束行不能超过第 ${state.selectedSheet.lastRowNumber} 行"
+            else -> "导入范围无效"
+        }
+    }
+
+    private fun OfflineImportUiState.Spreadsheet.sameSelection(other: OfflineImportUiState.Spreadsheet): Boolean =
+        session === other.session && selectedSheetId == other.selectedSheetId &&
+            phoneColumnIndex == other.phoneColumnIndex && skipHeader == other.skipHeader &&
+            rangeMode == other.rangeMode && startRowText == other.startRowText && endRowText == other.endRowText
 
     private fun startUnlockCountdown(seconds: Long) {
         unlockCountdownJob?.cancel()
@@ -488,26 +699,16 @@ class OfflineViewModel(
 
     override fun onCleared() {
         unlockCountdownJob?.cancel()
+        importPreviewJob?.cancel()
         closeImportSession()
         repository.lock()
         super.onCleared()
     }
 
-    private fun String.containsNameKeyword(): Boolean =
-        listOf("姓名", "名称", "客户", "联系人", "name").any { keyword -> contains(keyword, ignoreCase = true) }
-
-    private fun List<OfflineContact>.filterFor(filter: OfflineTaskFilter): List<OfflineContact> = when (filter) {
-        OfflineTaskFilter.PENDING -> filter { contact ->
-            contact.state == OfflineContactState.READY || contact.state == OfflineContactState.RETRY
-        }
-        OfflineTaskFilter.NOT_CONNECTED -> filter { contact ->
-            contact.lastResult == com.company.callcenter.data.offline.OfflineCallResult.NOT_CONNECTED
-        }
-        OfflineTaskFilter.ALL -> this
-    }
-
     private companion object {
         const val PENDING_RECONCILE_INTERVAL_MS = 5_000L
+        const val IMPORT_PREVIEW_DEBOUNCE_MS = 250L
+        const val MAX_ROW_INPUT_CHARS = 7
     }
 }
 

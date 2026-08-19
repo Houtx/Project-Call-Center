@@ -12,18 +12,34 @@ data class SpreadsheetColumnPreview(
     val index: Int,
     val letter: String,
     val header: String?,
-    val samples: List<String>,
+    val previewRows: List<SpreadsheetCellPreview>,
     val validPhoneCount: Int,
     val sampledValueCount: Int,
 ) {
+    val samples: List<String>
+        get() = previewRows.map { it.rawValue }
+
     val validRate: Double
         get() = if (sampledValueCount == 0) 0.0 else validPhoneCount.toDouble() / sampledValueCount
+
+    val suggestsHeader: Boolean
+        get() = previewRows.firstOrNull()?.normalizedPhone == null &&
+            previewRows.drop(1).any { it.normalizedPhone != null }
+}
+
+data class SpreadsheetCellPreview(
+    val rowNumber: Int,
+    val rawValue: String,
+) {
+    val normalizedPhone: String?
+        get() = PhoneNumberNormalizer.normalize(rawValue)
 }
 
 data class SpreadsheetSheetPreview(
     val id: String,
     val name: String,
     val rowCount: Int,
+    val lastRowNumber: Int,
     val columns: List<SpreadsheetColumnPreview>,
 )
 
@@ -51,6 +67,7 @@ enum class SpreadsheetFailureReason {
     CORRUPT_FILE,
     SHEET_NOT_FOUND,
     INVALID_COLUMN,
+    INVALID_RANGE,
 }
 
 class SpreadsheetReadException(

@@ -4,9 +4,8 @@ internal class PreviewAccumulator(
     private val sheetId: String,
     private val sheetName: String,
 ) {
-    private var firstRow: List<String>? = null
-    private val seenColumns = BooleanArray(ImportLimits.MAX_COLUMNS)
-    private val previewValues = Array(ImportLimits.MAX_COLUMNS) { mutableListOf<String>() }
+    private val seenColumns = linkedSetOf<Int>()
+    private val previewRows = mutableListOf<Pair<Int, List<String>>>()
     private var rows = 0
 
     fun accept(values: List<String>) {
@@ -19,39 +18,33 @@ internal class PreviewAccumulator(
         }
         values.forEachIndexed { index, value ->
             validateCell(value)
-            seenColumns[index] = true
+            seenColumns += index
         }
-        if (firstRow == null) {
-            firstRow = values.toList()
-            return
-        }
-        values.forEachIndexed { index, value ->
-            if (value.isNotBlank() && previewValues[index].size < ImportLimits.PREVIEW_VALUE_LIMIT) {
-                previewValues[index] += value
-            }
+        if (previewRows.size < ImportLimits.PREVIEW_SAMPLE_LIMIT) {
+            previewRows += rows to values.toList()
         }
     }
 
     fun build(): SpreadsheetSheetPreview {
-        val heading = firstRow.orEmpty()
-        val columns = seenColumns.indices.filter { seenColumns[it] }.map { index ->
-            val firstValue = heading.getOrNull(index).orEmpty()
+        val firstRow = previewRows.firstOrNull()?.second.orEmpty()
+        val columns = seenColumns.sorted().map { index ->
+            val firstValue = firstRow.getOrNull(index).orEmpty()
             val firstIsPhone = PhoneNumberNormalizer.normalize(firstValue) != null
-            val header = firstValue.takeIf { it.isNotBlank() && !firstIsPhone }
-            val sampled = buildList {
-                if (firstIsPhone) add(firstValue)
-                addAll(previewValues[index])
-            }.take(ImportLimits.PREVIEW_VALUE_LIMIT)
+            val sampled = previewRows.mapNotNull { (_, values) ->
+                values.getOrNull(index)?.takeIf(String::isNotBlank)
+            }
             SpreadsheetColumnPreview(
                 index = index,
                 letter = columnLetter(index),
-                header = header,
-                samples = sampled.take(ImportLimits.PREVIEW_SAMPLE_LIMIT),
+                header = firstValue.takeIf { it.isNotBlank() && !firstIsPhone },
+                previewRows = previewRows.map { (rowNumber, values) ->
+                    SpreadsheetCellPreview(rowNumber, values.getOrNull(index).orEmpty())
+                },
                 validPhoneCount = sampled.count { PhoneNumberNormalizer.normalize(it) != null },
                 sampledValueCount = sampled.size,
             )
         }
-        return SpreadsheetSheetPreview(sheetId, sheetName, rows, columns)
+        return SpreadsheetSheetPreview(sheetId, sheetName, rows, rows, columns)
     }
 }
 

@@ -33,7 +33,7 @@ The model can be enabled only when:
 - Logging the same agent into a second phone; the first phone must return to login within 15 seconds or on its next API operation, and its refresh token must be rejected.
 - Replacing a phone only after pending CallLog observations are synchronized; document the expected `UNKNOWN` result if an active session is intentionally replaced during collection.
 - Independent-mode password creation, repeated wrong-password throttling, one-minute background lock, Activity recreation and process restart.
-- Independent-mode XLSX/CSV/TSV and paste imports, including multiple worksheets, column selection, duplicates, malformed files and temporary-file cleanup after success, failure, lock and process restart.
+- Independent-mode XLSX/XLSM/CSV/TSV and paste imports, including titled/headerless sheets, 20-row classified previews, multiple worksheets, sparse and wide columns, duplicates, malformed files and temporary-file cleanup after success, failure, lock and process restart.
 - Independent-mode missed-call queue rotation, global single-pending enforcement, retry-limit decrease/increase, 24-hour unknown settlement and 10/15/30-day cleanup.
 - Switching between online and independent modes with no pending attempt; verify that independent mode produces no CRM health, login, heartbeat, sync or result-upload requests.
 - A cancelled app dial followed by a personal call to the same number outside the dial-start matching window; the personal call must not be attributed or uploaded.

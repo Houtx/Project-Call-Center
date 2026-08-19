@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
+import androidx.room.withTransaction
 import com.company.callcenter.data.AppModeStore
 import com.company.callcenter.data.CallStatistics
 import com.company.callcenter.data.CallStatisticsRange
@@ -18,6 +19,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -31,12 +33,13 @@ import java.util.UUID
 @OptIn(ExperimentalCoroutinesApi::class)
 class OfflineRepository(
     private val context: Context,
-    private val dao: OfflineDao,
+    private val database: OfflineDatabase,
     private val access: OfflineAccessStore,
     private val callLogReader: CallLogReader,
     private val appModeStore: AppModeStore,
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
+    private val dao = database.dao()
     private val importMutex = Mutex()
     private val callStateCoordinator = OfflineCallStateCoordinator()
     private val mutableConfigured = MutableStateFlow(access.isConfigured)
@@ -49,15 +52,49 @@ class OfflineRepository(
     val maximumAttempts: StateFlow<Int> = mutableMaximumAttempts.asStateFlow()
     val hasPendingCall: Flow<Boolean> = dao.observeHasPendingCall()
 
-    val contacts: Flow<List<OfflineContact>> = unlocked.flatMapLatest { isUnlocked ->
-        if (!isUnlocked) flowOf(emptyList()) else dao.observeContacts().map { rows ->
-            rows.mapNotNull(::toContact)
-        }
-    }
-
     val history: Flow<List<OfflineCallRecord>> = unlocked.flatMapLatest { isUnlocked ->
         if (!isUnlocked) flowOf(emptyList()) else dao.observeHistory().map { rows ->
             rows.mapNotNull(::toCallRecord)
+        }
+    }
+
+    val importBatches: Flow<List<OfflineImportBatch>> = unlocked.flatMapLatest { isUnlocked ->
+        if (!isUnlocked) flowOf(emptyList()) else dao.observeImportBatches().map { rows -> rows.map(::toImportBatch) }
+    }
+
+    fun taskPage(
+        filter: OfflineTaskFilter,
+        dateFilter: OfflineMissedDateFilter,
+    ): Flow<OfflineTaskPage> = unlocked.flatMapLatest { isUnlocked ->
+        if (!isUnlocked) {
+            flowOf(OfflineTaskPage())
+        } else {
+            val rows: Flow<List<OfflineContactEntity>>
+            val count: Flow<Int>
+            when (filter) {
+                OfflineTaskFilter.PENDING -> {
+                    rows = dao.observePendingContacts(TASK_PAGE_SIZE)
+                    count = dao.observePendingContactCount()
+                }
+                OfflineTaskFilter.NOT_CONNECTED -> {
+                    rows = dao.observeNotConnectedContacts(
+                        dateFilter.startMillis,
+                        dateFilter.endExclusiveMillis,
+                        TASK_PAGE_SIZE,
+                    )
+                    count = dao.observeNotConnectedContactCount(
+                        dateFilter.startMillis,
+                        dateFilter.endExclusiveMillis,
+                    )
+                }
+                OfflineTaskFilter.ALL -> {
+                    rows = dao.observeAllContacts(TASK_PAGE_SIZE)
+                    count = dao.observeAllContactCount()
+                }
+            }
+            combine(rows, count) { contacts, total ->
+                OfflineTaskPage(contacts.mapNotNull(::toContact), total)
+            }
         }
     }
 
@@ -105,12 +142,16 @@ class OfflineRepository(
 
     suspend fun eraseOfflineData(password: String): Boolean = withContext(Dispatchers.IO) {
         if (!access.verifyPassword(password).unlocked) return@withContext false
-        dao.clearAll()
-        access.clearPassword()
-        mutableUnlocked.value = false
-        mutableConfigured.value = false
-        mutableMaximumAttempts.value = DEFAULT_MAX_ATTEMPTS
-        true
+        importMutex.withLock {
+            callStateCoordinator.serialized {
+                dao.clearAll()
+                access.clearPassword()
+                mutableUnlocked.value = false
+                mutableConfigured.value = false
+                mutableMaximumAttempts.value = DEFAULT_MAX_ATTEMPTS
+                true
+            }
+        }
     }
 
     suspend fun setMaximumAttempts(value: Int) = withContext(Dispatchers.IO) {
@@ -126,11 +167,13 @@ class OfflineRepository(
     suspend fun importContacts(
         records: List<OfflineImportContact>,
         invalidCount: Int = 0,
+        duplicateCount: Int = 0,
+        metadata: OfflineImportMetadata,
     ): OfflineImportResult = withContext(Dispatchers.IO) {
         checkUnlocked()
         importMutex.withLock {
             val unique = LinkedHashMap<String, Pair<String, String?>>()
-            var duplicatesInInput = 0
+            var duplicatesInInput = duplicateCount
             var invalid = invalidCount
             records.forEach { record ->
                 val phone = PhoneNumberNormalizer.normalize(record.phone)
@@ -144,34 +187,63 @@ class OfflineRepository(
                 }
             }
 
-            var queueOrder = dao.maximumQueueOrder()
-            var added = 0
-            unique.entries.chunked(IMPORT_CHUNK_SIZE).forEach { chunk ->
-                val entities = chunk.map { (hash, phoneAndName) ->
-                    val (phone, name) = phoneAndName
-                    queueOrder += 1
-                    OfflineContactEntity(
-                        id = UUID.randomUUID().toString(),
-                        encryptedPhone = access.encrypt(phone),
-                        phoneHash = hash,
-                        phoneMasked = maskPhone(phone),
-                        encryptedName = name?.let(access::encrypt),
-                        importedAt = clock(),
-                        state = OfflineContactState.READY.name,
-                        attemptCount = 0,
-                        lastResult = null,
-                        lastAttemptAt = null,
-                        completedAt = null,
-                        queueOrder = queueOrder,
-                    )
+            val batchId = UUID.randomUUID().toString()
+            val importedAt = clock()
+            database.withTransaction {
+                dao.insertImportBatch(metadata.toEntity(batchId, importedAt))
+                var queueOrder = dao.maximumQueueOrder()
+                var added = 0
+                unique.entries.chunked(IMPORT_CHUNK_SIZE).forEach { chunk ->
+                    val entities = chunk.map { (hash, phoneAndName) ->
+                        val (phone, name) = phoneAndName
+                        queueOrder += 1
+                        OfflineContactEntity(
+                            id = UUID.randomUUID().toString(),
+                            encryptedPhone = access.encrypt(phone),
+                            phoneHash = hash,
+                            phoneMasked = maskPhone(phone),
+                            encryptedName = name?.let(access::encrypt),
+                            importedAt = importedAt,
+                            state = OfflineContactState.READY.name,
+                            attemptCount = 0,
+                            lastResult = null,
+                            lastAttemptAt = null,
+                            completedAt = null,
+                            queueOrder = queueOrder,
+                            importBatchId = batchId,
+                        )
+                    }
+                    added += dao.insertContacts(entities).count { rowId -> rowId != -1L }
                 }
-                added += dao.insertContacts(entities).count { rowId -> rowId != -1L }
+                val result = OfflineImportResult(
+                    addedCount = added,
+                    duplicateCount = duplicatesInInput + unique.size - added,
+                    invalidCount = invalid,
+                )
+                dao.finishImportBatch(batchId, result.addedCount, result.duplicateCount, result.invalidCount)
+                result
             }
-            OfflineImportResult(
-                addedCount = added,
-                duplicateCount = duplicatesInInput + unique.size - added,
-                invalidCount = invalid,
-            )
+        }
+    }
+
+    suspend fun countContactsForImportBatch(batchId: String): Int = withContext(Dispatchers.IO) {
+        checkUnlocked()
+        dao.countContactsForImportBatch(batchId)
+    }
+
+    suspend fun deleteImportBatch(batchId: String): OfflineImportDeleteResult = withContext(Dispatchers.IO) {
+        importMutex.withLock {
+            callStateCoordinator.serialized {
+                checkUnlocked()
+                database.withTransaction {
+                    check(!dao.hasPendingCallForImportBatch(batchId)) {
+                        "这次导入包含正在采集通话结果的号码，请通话结束并完成采集后再删除"
+                    }
+                    val deleted = dao.deleteContactsForImportBatch(batchId)
+                    check(dao.deleteImportBatch(batchId) == 1) { "导入记录不存在或已被删除" }
+                    OfflineImportDeleteResult(deleted)
+                }
+            }
         }
     }
 
@@ -188,47 +260,51 @@ class OfflineRepository(
     }
 
     suspend fun authorizeCall(contactId: String): DialAuthorization = withContext(Dispatchers.IO) {
-        checkOfflineDialAccess()
-        checkRequiredPermissions()
-        val contact = dao.contact(contactId) ?: error("离线联系人不存在")
-        check(
-            OfflineCallPolicy.canCall(
-                state = OfflineContactState.valueOf(contact.state),
-                attemptCount = contact.attemptCount,
-                maximumAttempts = maximumAttempts.value,
-            ),
-        ) { "该联系人当前不可外呼或已达到最大外呼次数" }
+        callStateCoordinator.serialized {
+            checkOfflineDialAccess()
+            checkRequiredPermissions()
+            val contact = dao.contact(contactId) ?: error("离线联系人不存在")
+            check(
+                OfflineCallPolicy.canCall(
+                    state = OfflineContactState.valueOf(contact.state),
+                    attemptCount = contact.attemptCount,
+                    maximumAttempts = maximumAttempts.value,
+                ),
+            ) { "该联系人当前不可外呼或已达到最大外呼次数" }
 
-        val phone = access.decrypt(contact.encryptedPhone)
-        val initiatedAt = clock()
-        val attemptId = UUID.randomUUID().toString()
-        val queueOrder = dao.maximumQueueOrder() + 1
-        val pending = OfflinePendingCallEntity(
-            attemptId = attemptId,
-            contactId = contact.id,
-            encryptedPhone = contact.encryptedPhone,
-            callLogBaselineId = callLogReader.latestOutgoingId(),
-            initiatedAt = initiatedAt,
-            deadlineAt = initiatedAt + COLLECTION_WINDOW_MILLIS,
-            previousState = contact.state,
-            previousCompletedAt = contact.completedAt,
-            previousQueueOrder = contact.queueOrder,
-        )
-        checkOfflineDialAccess()
-        check(dao.beginAttempt(pending, queueOrder, maximumAttempts.value)) {
-            "该联系人当前不可外呼，请刷新后重试"
+            val phone = access.decrypt(contact.encryptedPhone)
+            val initiatedAt = clock()
+            val attemptId = UUID.randomUUID().toString()
+            val queueOrder = dao.maximumQueueOrder() + 1
+            val pending = OfflinePendingCallEntity(
+                attemptId = attemptId,
+                contactId = contact.id,
+                encryptedPhone = contact.encryptedPhone,
+                callLogBaselineId = callLogReader.latestOutgoingId(),
+                initiatedAt = initiatedAt,
+                deadlineAt = initiatedAt + COLLECTION_WINDOW_MILLIS,
+                previousState = contact.state,
+                previousCompletedAt = contact.completedAt,
+                previousQueueOrder = contact.queueOrder,
+            )
+            checkOfflineDialAccess()
+            check(dao.beginAttempt(pending, queueOrder, maximumAttempts.value)) {
+                "该联系人当前不可外呼，请刷新后重试"
+            }
+            DialAuthorization(
+                attemptId = attemptId,
+                phone = phone,
+                recordingRequested = false,
+                source = DialSource.OFFLINE,
+            )
         }
-        DialAuthorization(
-            attemptId = attemptId,
-            phone = phone,
-            recordingRequested = false,
-            source = DialSource.OFFLINE,
-        )
     }
 
     suspend fun cancelFailedCallAttempt(attemptId: String) = withContext(Dispatchers.IO) {
-        val pending = dao.pendingCall(attemptId) ?: return@withContext
-        dao.cancelAttempt(pending)
+        callStateCoordinator.serialized {
+            val pending = dao.pendingCall(attemptId) ?: return@serialized
+            dao.cancelAttempt(pending)
+        }
     }
 
     suspend fun reconcilePending(): Int = withContext(Dispatchers.IO) {
@@ -293,8 +369,10 @@ class OfflineRepository(
     }
 
     suspend fun deleteCompletedBefore(days: Int): OfflineCleanupResult = withContext(Dispatchers.IO) {
-        checkUnlocked()
-        OfflineCleanupResult(dao.deleteCompletedBefore(cleanupCutoff(days)))
+        callStateCoordinator.serialized {
+            checkUnlocked()
+            OfflineCleanupResult(dao.deleteCompletedBefore(cleanupCutoff(days)))
+        }
     }
 
     private fun cleanupCutoff(days: Int): Long {
@@ -334,6 +412,36 @@ class OfflineRepository(
         )
     }.getOrNull()
 
+    private fun toImportBatch(entity: OfflineImportBatchEntity): OfflineImportBatch = OfflineImportBatch(
+        id = entity.id,
+        displayName = entity.displayName,
+        source = OfflineImportSource.valueOf(entity.source),
+        sheetName = entity.sheetName,
+        columnLetter = entity.columnLetter,
+        requestedStartRow = entity.requestedStartRow,
+        requestedEndRow = entity.requestedEndRow,
+        skipHeader = entity.skipHeader,
+        createdAt = entity.createdAt,
+        addedCount = entity.addedCount,
+        duplicateCount = entity.duplicateCount,
+        invalidCount = entity.invalidCount,
+    )
+
+    private fun OfflineImportMetadata.toEntity(id: String, createdAt: Long) = OfflineImportBatchEntity(
+        id = id,
+        displayName = displayName.take(200),
+        source = source.name,
+        sheetName = sheetName?.take(100),
+        columnLetter = columnLetter?.take(5),
+        requestedStartRow = requestedStartRow,
+        requestedEndRow = requestedEndRow,
+        skipHeader = skipHeader,
+        createdAt = createdAt,
+        addedCount = 0,
+        duplicateCount = 0,
+        invalidCount = 0,
+    )
+
     private fun checkUnlocked() {
         check(unlocked.value) { "离线数据已锁定，请先输入密码" }
     }
@@ -372,6 +480,7 @@ class OfflineRepository(
 
     private companion object {
         const val IMPORT_CHUNK_SIZE = 500
+        const val TASK_PAGE_SIZE = 100
         const val COLLECTION_WINDOW_MILLIS = 24L * 60L * 60L * 1_000L
         const val DEFAULT_MAX_ATTEMPTS = 2
         const val MIN_MAX_ATTEMPTS = 1

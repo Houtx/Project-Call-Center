@@ -9,6 +9,7 @@ import com.company.callcenter.data.local.CallCenterDatabase
 import com.company.callcenter.data.offline.OfflineAccessStore
 import com.company.callcenter.data.offline.OfflineDatabase
 import com.company.callcenter.data.offline.OfflineImportService
+import com.company.callcenter.data.offline.OFFLINE_MIGRATION_1_2
 import com.company.callcenter.data.offline.OfflineRepository
 import com.company.callcenter.data.remote.ApiFactory
 import com.company.callcenter.telephony.CallLogReader
@@ -35,7 +36,7 @@ class AppContainer(context: Context) {
         appContext,
         OfflineDatabase::class.java,
         "call-center-offline.db",
-    ).build()
+    ).addMigrations(OFFLINE_MIGRATION_1_2).build()
     private val session = SessionStore(appContext)
     private val apiFactory = ApiFactory()
     private val callLogReader = CallLogReader(appContext)
@@ -59,7 +60,7 @@ class AppContainer(context: Context) {
 
     val offlineRepository = OfflineRepository(
         context = appContext,
-        dao = offlineDatabase.dao(),
+        database = offlineDatabase,
         access = OfflineAccessStore(appContext),
         callLogReader = callLogReader,
         appModeStore = appModeStore,

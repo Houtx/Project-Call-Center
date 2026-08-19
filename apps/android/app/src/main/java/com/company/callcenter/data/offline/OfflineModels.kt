@@ -20,6 +20,18 @@ enum class OfflineTaskFilter {
     ALL,
 }
 
+enum class OfflineMissedDatePreset {
+    ALL,
+    THIS_WEEK,
+    CUSTOM,
+}
+
+data class OfflineMissedDateFilter(
+    val preset: OfflineMissedDatePreset = OfflineMissedDatePreset.ALL,
+    val startMillis: Long? = null,
+    val endExclusiveMillis: Long? = null,
+)
+
 data class OfflineContact(
     val id: String,
     val name: String,
@@ -30,6 +42,11 @@ data class OfflineContact(
     val importedAt: Long,
     val lastAttemptAt: Long?,
     val completedAt: Long?,
+)
+
+data class OfflineTaskPage(
+    val contacts: List<OfflineContact> = emptyList(),
+    val totalCount: Int = 0,
 )
 
 data class OfflineCallRecord(
@@ -51,6 +68,40 @@ data class OfflineImportResult(
     val addedCount: Int,
     val duplicateCount: Int,
     val invalidCount: Int,
+)
+
+enum class OfflineImportSource {
+    SPREADSHEET,
+    PASTE,
+}
+
+data class OfflineImportMetadata(
+    val displayName: String,
+    val source: OfflineImportSource,
+    val sheetName: String? = null,
+    val columnLetter: String? = null,
+    val requestedStartRow: Int? = null,
+    val requestedEndRow: Int? = null,
+    val skipHeader: Boolean = false,
+)
+
+data class OfflineImportBatch(
+    val id: String,
+    val displayName: String,
+    val source: OfflineImportSource,
+    val sheetName: String?,
+    val columnLetter: String?,
+    val requestedStartRow: Int?,
+    val requestedEndRow: Int?,
+    val skipHeader: Boolean,
+    val createdAt: Long,
+    val addedCount: Int,
+    val duplicateCount: Int,
+    val invalidCount: Int,
+)
+
+data class OfflineImportDeleteResult(
+    val deletedContacts: Int,
 )
 
 data class OfflineCleanupResult(

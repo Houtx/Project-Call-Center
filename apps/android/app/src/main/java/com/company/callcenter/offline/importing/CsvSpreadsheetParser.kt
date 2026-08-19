@@ -18,25 +18,39 @@ internal class CsvSpreadsheetParser(private val file: File) {
         get() = if (delimiter == '\t') SpreadsheetFormat.TSV else SpreadsheetFormat.CSV
 
     fun preview(): SpreadsheetPreview {
-        val accumulator = PreviewAccumulator(SHEET_ID, file.nameWithoutExtension.ifBlank { "数据" })
-        parseRecords { _, values -> accumulator.accept(values) }
+        val accumulator = PreviewAccumulator(SHEET_ID, SHEET_NAME)
+        parseRecords { _, values ->
+            accumulator.accept(values)
+            true
+        }
         return SpreadsheetPreview(format, listOf(accumulator.build()))
     }
 
-    fun readColumn(sheetId: String, columnIndex: Int, skipHeader: Boolean): SpreadsheetColumnData {
+    fun readColumn(
+        sheetId: String,
+        columnIndex: Int,
+        skipHeader: Boolean,
+        startRow: Int,
+        endRowInclusive: Int?,
+        limit: Int?,
+    ): SpreadsheetColumnData {
         if (sheetId != SHEET_ID) {
             throw SpreadsheetReadException(SpreadsheetFailureReason.SHEET_NOT_FOUND, "找不到所选工作表")
         }
         val cells = ArrayList<SpreadsheetCellValue>()
+        var firstRow = true
         parseRecords { rowNumber, values ->
-            if (!(skipHeader && rowNumber == 1)) {
+            val skip = skipHeader && firstRow
+            firstRow = false
+            if (!skip && rowNumber >= startRow && (endRowInclusive == null || rowNumber <= endRowInclusive)) {
                 cells += SpreadsheetCellValue(rowNumber, values.getOrNull(columnIndex).orEmpty())
             }
+            (endRowInclusive == null || rowNumber < endRowInclusive) && (limit == null || cells.size < limit)
         }
         return SpreadsheetColumnData(SHEET_ID, columnIndex, cells)
     }
 
-    private fun parseRecords(onRecord: (Int, List<String>) -> Unit) {
+    private fun parseRecords(onRecord: (Int, List<String>) -> Boolean) {
         openReader().use { reader ->
             val fields = ArrayList<String>()
             val field = StringBuilder()
@@ -53,15 +67,16 @@ internal class CsvSpreadsheetParser(private val file: File) {
                 }
             }
 
-            fun finishRecord() {
+            fun finishRecord(): Boolean {
                 finishField()
                 rowNumber += 1
                 if (rowNumber > ImportLimits.MAX_ROWS) {
                     throw limitExceeded("表格最多支持 ${ImportLimits.MAX_ROWS} 行")
                 }
-                onRecord(rowNumber, fields.toList())
+                val continueReading = onRecord(rowNumber, fields.toList())
                 fields.clear()
                 hasContent = false
+                return continueReading
             }
 
             while (true) {
@@ -103,7 +118,7 @@ internal class CsvSpreadsheetParser(private val file: File) {
                             val next = reader.read()
                             if (next != '\n'.code && next != -1) reader.unread(next)
                         }
-                        finishRecord()
+                        if (!finishRecord()) break
                     }
                     else -> {
                         field.append(character)
@@ -222,6 +237,7 @@ internal class CsvSpreadsheetParser(private val file: File) {
 
     private companion object {
         const val SHEET_ID = "text"
+        const val SHEET_NAME = "数据"
         const val DELIMITER_SAMPLE_RECORDS = 20
         const val BINARY_SAMPLE_BYTES = 8 * 1024
     }

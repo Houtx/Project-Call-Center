@@ -17,7 +17,7 @@ class SpreadsheetReader {
             )
             ContainerKind.UNKNOWN -> throw SpreadsheetReadException(
                 SpreadsheetFailureReason.UNSUPPORTED_FORMAT,
-                "仅支持 .xlsx、.csv 和 .tsv 文件",
+                "仅支持 .xlsx、.xlsm、.csv 和 .tsv 文件",
             )
         }
     }
@@ -27,6 +27,9 @@ class SpreadsheetReader {
         sheetId: String,
         columnIndex: Int,
         skipHeader: Boolean,
+        startRow: Int = 1,
+        endRowInclusive: Int? = null,
+        limit: Int? = null,
     ): SpreadsheetColumnData = guardedRead {
         validateFile(file)
         if (columnIndex !in 0 until ImportLimits.MAX_COLUMNS) {
@@ -35,16 +38,39 @@ class SpreadsheetReader {
                 "列序号必须介于 0 和 ${ImportLimits.MAX_COLUMNS - 1} 之间",
             )
         }
+        if (startRow !in 1..ImportLimits.MAX_PHYSICAL_ROW ||
+            endRowInclusive != null && endRowInclusive !in startRow..ImportLimits.MAX_PHYSICAL_ROW ||
+            limit != null && limit <= 0
+        ) {
+            throw SpreadsheetReadException(
+                SpreadsheetFailureReason.INVALID_RANGE,
+                "导入范围无效，请检查起始行和结束行",
+            )
+        }
         when (detectContainer(file)) {
-            ContainerKind.XLSX -> XlsxSpreadsheetParser(file).readColumn(sheetId, columnIndex, skipHeader)
-            ContainerKind.TEXT -> CsvSpreadsheetParser(file).readColumn(sheetId, columnIndex, skipHeader)
+            ContainerKind.XLSX -> XlsxSpreadsheetParser(file).readColumn(
+                sheetId,
+                columnIndex,
+                skipHeader,
+                startRow,
+                endRowInclusive,
+                limit,
+            )
+            ContainerKind.TEXT -> CsvSpreadsheetParser(file).readColumn(
+                sheetId,
+                columnIndex,
+                skipHeader,
+                startRow,
+                endRowInclusive,
+                limit,
+            )
             ContainerKind.OLE -> throw SpreadsheetReadException(
                 SpreadsheetFailureReason.ENCRYPTED_FILE,
                 "不支持加密的 Excel 文件或旧版 .xls 文件",
             )
             ContainerKind.UNKNOWN -> throw SpreadsheetReadException(
                 SpreadsheetFailureReason.UNSUPPORTED_FORMAT,
-                "仅支持 .xlsx、.csv 和 .tsv 文件",
+                "仅支持 .xlsx、.xlsm、.csv 和 .tsv 文件",
             )
         }
     }
