@@ -46,11 +46,13 @@ class CallLogReader(private val context: Context) {
             CallLog.Calls.DURATION,
             CallLog.Calls.LAST_MODIFIED,
         )
-        val selection = "${CallLog.Calls.TYPE} = ? AND ${CallLog.Calls._ID} > ? AND ${CallLog.Calls.DATE} >= ?"
+        val selection = "${CallLog.Calls.TYPE} = ? AND ${CallLog.Calls._ID} > ? " +
+            "AND ${CallLog.Calls.DATE} >= ? AND ${CallLog.Calls.DATE} <= ?"
         val args = arrayOf(
             CallLog.Calls.OUTGOING_TYPE.toString(),
             baselineId.toString(),
             (initiatedAt - MATCH_CLOCK_TOLERANCE_MS).toString(),
+            (initiatedAt + DIAL_START_MATCH_WINDOW_MS).toString(),
         )
         resolver.query(
             CallLog.Calls.CONTENT_URI,
@@ -78,5 +80,6 @@ class CallLogReader(private val context: Context) {
 
     private companion object {
         const val MATCH_CLOCK_TOLERANCE_MS = 10_000L
+        const val DIAL_START_MATCH_WINDOW_MS = 2L * 60L * 1_000L
     }
 }

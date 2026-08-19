@@ -20,6 +20,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.Call
+import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.History
@@ -81,19 +82,33 @@ fun AgentApp(
     viewModel: AgentViewModel,
     permissionsGranted: Boolean,
     requestPermissions: () -> Unit,
+    telemetryAvailable: Boolean,
+    telemetryEnabled: Boolean,
+    onTelemetryEnabledChange: (Boolean) -> Unit,
+    onUseOffline: () -> Unit,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     if (!state.loggedIn) {
-        LoginScreen(state, viewModel::signIn)
+        LoginScreen(state, viewModel::signIn, onUseOffline)
         return
     }
-    MainScreen(state, permissionsGranted, requestPermissions, viewModel)
+    MainScreen(
+        state = state,
+        permissionsGranted = permissionsGranted,
+        requestPermissions = requestPermissions,
+        telemetryAvailable = telemetryAvailable,
+        telemetryEnabled = telemetryEnabled,
+        onTelemetryEnabledChange = onTelemetryEnabledChange,
+        viewModel = viewModel,
+        onUseOffline = onUseOffline,
+    )
 }
 
 @Composable
 private fun LoginScreen(
     state: AgentUiState,
     onLogin: (String, String, String) -> Unit,
+    onUseOffline: () -> Unit,
 ) {
     var serverAddress by remember(state.serverConnection.suggestedUrl) {
         mutableStateOf(state.serverConnection.suggestedUrl.orEmpty())
@@ -169,6 +184,14 @@ private fun LoginScreen(
                     )
                 }
             }
+            OutlinedButton(
+                onClick = onUseOffline,
+                enabled = !state.loading,
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                shape = RoundedCornerShape(8.dp),
+            ) {
+                Text("不连接服务器，使用离线模式")
+            }
         }
     }
 }
@@ -179,7 +202,11 @@ private fun MainScreen(
     state: AgentUiState,
     permissionsGranted: Boolean,
     requestPermissions: () -> Unit,
+    telemetryAvailable: Boolean,
+    telemetryEnabled: Boolean,
+    onTelemetryEnabledChange: (Boolean) -> Unit,
     viewModel: AgentViewModel,
+    onUseOffline: () -> Unit,
 ) {
     var tab by remember { mutableIntStateOf(0) }
     val snackbars = remember { SnackbarHostState() }
@@ -203,7 +230,7 @@ private fun MainScreen(
         snackbarHost = { SnackbarHost(snackbars) },
         topBar = {
             TopAppBar(
-                title = { Text(listOf("待呼任务", "通话记录", "我的")[tab]) },
+                title = { Text(listOf("待呼任务", "通话记录", "外呼统计", "我的")[tab]) },
                 actions = {
                     if (tab == 0) {
                         IconButton(onClick = viewModel::refresh, enabled = !state.loading) {
@@ -218,7 +245,8 @@ private fun MainScreen(
                 listOf(
                     Triple("任务", Icons.Outlined.Call, 0),
                     Triple("记录", Icons.Outlined.History, 1),
-                    Triple("我的", Icons.Outlined.AccountCircle, 2),
+                    Triple("统计", Icons.Outlined.BarChart, 2),
+                    Triple("我的", Icons.Outlined.AccountCircle, 3),
                 ).forEach { (label, icon, index) ->
                     NavigationBarItem(
                         selected = tab == index,
@@ -234,6 +262,7 @@ private fun MainScreen(
             when (tab) {
                 0 -> TaskList(state, permissionsGranted, requestPermissions, viewModel)
                 1 -> HistoryList(state.history, viewModel::revealHistoryPhone)
+                2 -> CallStatisticsScreen(state.statistics, state.statisticsRange, viewModel::setStatisticsRange)
                 else -> AccountScreen(
                     state,
                     permissionsGranted,
@@ -241,6 +270,10 @@ private fun MainScreen(
                     viewModel::logout,
                     viewModel::changeServer,
                     viewModel::setSimDialMode,
+                    telemetryAvailable,
+                    telemetryEnabled,
+                    onTelemetryEnabledChange,
+                    onUseOffline,
                 )
             }
             if (state.loading) CircularProgressIndicator(Modifier.align(Alignment.TopCenter))
@@ -397,6 +430,10 @@ private fun AccountScreen(
     onLogout: () -> Unit,
     onChangeServer: () -> Unit,
     onSimModeChange: (SimDialMode) -> Unit,
+    telemetryAvailable: Boolean,
+    telemetryEnabled: Boolean,
+    onTelemetryEnabledChange: (Boolean) -> Unit,
+    onUseOffline: () -> Unit,
 ) {
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
@@ -422,9 +459,19 @@ private fun AccountScreen(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        if (telemetryAvailable) {
+            UsageTelemetrySetting(telemetryEnabled, onTelemetryEnabledChange)
+        }
         Spacer(Modifier.height(8.dp))
         OutlinedButton(onClick = onChangeServer, modifier = Modifier.fillMaxWidth()) {
             Text("切换服务器")
+        }
+        OutlinedButton(
+            onClick = onUseOffline,
+            enabled = !state.hasPendingCall && !state.loading,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("切换到离线模式")
         }
         OutlinedButton(onClick = onLogout, modifier = Modifier.fillMaxWidth()) { Text("退出登录") }
     }
@@ -432,7 +479,7 @@ private fun AccountScreen(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SimDialSettings(
+fun SimDialSettings(
     state: SimDialState,
     onModeChange: (SimDialMode) -> Unit,
 ) {

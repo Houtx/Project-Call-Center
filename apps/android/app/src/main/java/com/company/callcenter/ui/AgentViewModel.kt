@@ -3,7 +3,11 @@ package com.company.callcenter.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.company.callcenter.data.AppMode
+import com.company.callcenter.data.AppModeStore
 import com.company.callcenter.data.CallCenterRepository
+import com.company.callcenter.data.CallStatistics
+import com.company.callcenter.data.CallStatisticsRange
 import com.company.callcenter.data.DialAuthorization
 import com.company.callcenter.data.ServerConnectionState
 import com.company.callcenter.data.ServerConnectionStatus
@@ -12,14 +16,16 @@ import com.company.callcenter.data.local.CallHistoryEntity
 import com.company.callcenter.telephony.SimCallManager
 import com.company.callcenter.telephony.SimDialMode
 import com.company.callcenter.telephony.SimDialState
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.isActive
@@ -32,6 +38,8 @@ data class AgentUiState(
     val assignments: List<AssignedCustomerEntity> = emptyList(),
     val maxCallAttempts: Int = 2,
     val history: List<CallHistoryEntity> = emptyList(),
+    val statistics: CallStatistics = CallStatistics(),
+    val statisticsRange: CallStatisticsRange = CallStatisticsRange.TODAY,
     val hasPendingCall: Boolean = false,
     val loading: Boolean = false,
     val error: String? = null,
@@ -42,9 +50,11 @@ data class AgentUiState(
     ),
 )
 
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class AgentViewModel(
     private val repository: CallCenterRepository,
     private val simCallManager: SimCallManager,
+    private val appModeStore: AppModeStore,
 ) : ViewModel() {
     private val transient = MutableStateFlow(
         AgentUiState(
@@ -54,19 +64,27 @@ class AgentViewModel(
         ),
     )
 
-    val dialEvents = MutableSharedFlow<DialAuthorization>(extraBufferCapacity = 1)
+    private val dialChannel = Channel<DialAuthorization>(capacity = Channel.BUFFERED)
+    val dialEvents = dialChannel.receiveAsFlow()
+    private val statisticsRange = MutableStateFlow(CallStatisticsRange.TODAY)
+    private val statistics = statisticsRange.flatMapLatest(repository::statistics)
     private val assignmentsWithPolicy = combine(
         repository.assignments,
         repository.maxCallAttempts,
     ) { assignments, maxCallAttempts -> assignments to maxCallAttempts }
 
+    private val activityData = combine(
+        repository.history,
+        repository.hasPendingCall,
+        statistics,
+    ) { history, pending, stats -> Triple(history, pending, stats) }
+
     val state: StateFlow<AgentUiState> = combine(
         transient,
         repository.serverConnection,
         assignmentsWithPolicy,
-        repository.history,
-        repository.hasPendingCall,
-    ) { current, serverConnection, assignmentPolicy, history, pending ->
+        activityData,
+    ) { current, serverConnection, assignmentPolicy, activity ->
         current.copy(
             // A server that has not been verified is not usable, even if an old
             // token remains in secure storage. This sends the agent back to the
@@ -76,8 +94,10 @@ class AgentViewModel(
             serverConnection = serverConnection,
             assignments = assignmentPolicy.first,
             maxCallAttempts = assignmentPolicy.second,
-            history = history,
-            hasPendingCall = pending,
+            history = activity.first,
+            hasPendingCall = activity.second,
+            statistics = activity.third,
+            statisticsRange = statisticsRange.value,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), transient.value)
 
@@ -87,8 +107,13 @@ class AgentViewModel(
                 transient.value = transient.value.copy(simDial = simDial)
             }
         }
-        if (repository.serverConnection.value.status != ServerConnectionStatus.NOT_CONFIGURED) {
-            viewModelScope.launch {
+        viewModelScope.launch {
+            appModeStore.mode.collectLatest { mode ->
+                if (mode != AppMode.ONLINE ||
+                    repository.serverConnection.value.status == ServerConnectionStatus.NOT_CONFIGURED
+                ) {
+                    return@collectLatest
+                }
                 transient.value = transient.value.copy(loading = true, error = null)
                 try {
                     repository.validateServerConfiguration()
@@ -109,8 +134,10 @@ class AgentViewModel(
             }
         }
         viewModelScope.launch {
-            repository.hasPendingCall.distinctUntilChanged().collectLatest { pending ->
-                while (pending && coroutineContext.isActive) {
+            combine(appModeStore.mode, repository.hasPendingCall) { mode, pending ->
+                mode == AppMode.ONLINE && pending
+            }.distinctUntilChanged().collectLatest { shouldReconcile ->
+                while (shouldReconcile && coroutineContext.isActive) {
                     try {
                         repository.refreshSession()
                         repository.reconcilePending()
@@ -126,7 +153,7 @@ class AgentViewModel(
         viewModelScope.launch {
             while (coroutineContext.isActive) {
                 delay(SESSION_CHECK_INTERVAL_MS)
-                if (!repository.isLoggedIn) continue
+                if (appModeStore.mode.value != AppMode.ONLINE || !repository.isLoggedIn) continue
                 try {
                     repository.validateCompatibility()
                 } catch (cancelled: CancellationException) {
@@ -145,6 +172,7 @@ class AgentViewModel(
 
     fun signIn(serverAddress: String, username: String, password: String) {
         launchBusy {
+            checkOnlineMode()
             repository.configureServer(serverAddress)
             val response = repository.login(username, password)
             transient.value = transient.value.copy(
@@ -159,22 +187,31 @@ class AgentViewModel(
     fun refresh() = launchBusy(clearError = false) { refreshData() }
 
     private suspend fun refreshData(validateServer: Boolean = true) {
+        checkOnlineMode()
         simCallManager.refresh()
         if (validateServer) repository.validateServerConfiguration()
+        checkOnlineMode()
         repository.refreshSession()
+        checkOnlineMode()
         repository.heartbeat()
+        checkOnlineMode()
         repository.validateCompatibility()
+        checkOnlineMode()
         repository.reconcilePending()
+        checkOnlineMode()
         repository.sync()
     }
 
     fun onReturnedToForeground() {
-        if (!repository.isLoggedIn) return
+        if (appModeStore.mode.value != AppMode.ONLINE || !repository.isLoggedIn) return
         viewModelScope.launch {
             try {
                 repository.validateServerConfiguration()
+                checkOnlineMode()
                 repository.refreshSession()
+                checkOnlineMode()
                 repository.reconcilePending()
+                checkOnlineMode()
                 repository.sync()
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -185,10 +222,12 @@ class AgentViewModel(
     }
 
     fun revealPhone(assignmentId: String) = launchBusy {
+        checkOnlineMode()
         transient.value = transient.value.copy(revealedPhone = repository.revealPhone(assignmentId))
     }
 
     fun revealHistoryPhone(attemptId: String) = launchBusy {
+        checkOnlineMode()
         transient.value = transient.value.copy(revealedPhone = repository.revealHistoryPhone(attemptId))
     }
 
@@ -197,13 +236,18 @@ class AgentViewModel(
     }
 
     fun call(assignmentId: String) = launchBusy {
+        checkOnlineMode()
         simCallManager.requireAvailableSim()
         val authorization = repository.authorizeCall(assignmentId)
-        dialEvents.emit(authorization)
+        dialChannel.send(authorization)
     }
 
     fun setSimDialMode(mode: SimDialMode) {
         simCallManager.setMode(mode)
+    }
+
+    fun setStatisticsRange(range: CallStatisticsRange) {
+        statisticsRange.value = range
     }
 
     fun refreshSimConfiguration() {
@@ -268,6 +312,10 @@ class AgentViewModel(
         }
     }
 
+    private fun checkOnlineMode() {
+        check(appModeStore.mode.value == AppMode.ONLINE) { "当前不是在线模式" }
+    }
+
     private companion object {
         const val SESSION_CHECK_INTERVAL_MS = 15_000L
     }
@@ -276,8 +324,9 @@ class AgentViewModel(
 class AgentViewModelFactory(
     private val repository: CallCenterRepository,
     private val simCallManager: SimCallManager,
+    private val appModeStore: AppModeStore,
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T =
-        AgentViewModel(repository, simCallManager) as T
+        AgentViewModel(repository, simCallManager, appModeStore) as T
 }

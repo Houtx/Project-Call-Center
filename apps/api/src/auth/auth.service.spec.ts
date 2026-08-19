@@ -140,8 +140,8 @@ describe('AuthService mobile single-session login', () => {
       model: 'SM-F9660',
       androidVersion: '16',
       androidSdk: 36,
-      appVersion: '0.3.0-debug',
-      appVersionCode: 3,
+      appVersion: '0.4.0-debug',
+      appVersionCode: 4,
     });
 
     const first = await service.login(user.username, 'test-only-agent-password', device('phone-a'));

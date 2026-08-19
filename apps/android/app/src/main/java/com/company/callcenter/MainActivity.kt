@@ -4,6 +4,8 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
+import android.view.WindowManager
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -13,11 +15,17 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
-import androidx.lifecycle.repeatOnLifecycle
 import com.company.callcenter.ui.AgentApp
 import com.company.callcenter.ui.AgentViewModel
 import com.company.callcenter.ui.AgentViewModelFactory
+import com.company.callcenter.ui.AppModeScreen
 import com.company.callcenter.ui.CallCenterTheme
+import com.company.callcenter.ui.OfflineAgentApp
+import com.company.callcenter.ui.OfflineViewModel
+import com.company.callcenter.ui.OfflineViewModelFactory
+import com.company.callcenter.data.AppMode
+import com.company.callcenter.data.DialSource
+import com.company.callcenter.data.offline.OfflineDialAccessPolicy
 import com.company.callcenter.update.AppUpdateException
 import com.company.callcenter.update.AppUpdateManager
 import com.company.callcenter.update.InstallLaunchResult
@@ -29,6 +37,7 @@ import com.company.callcenter.update.UpdatePolicy
 import com.company.callcenter.update.VerifiedApk
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
@@ -38,18 +47,33 @@ class MainActivity : ComponentActivity() {
     private val updateManager by lazy { AppUpdateManager(applicationContext) }
     private val appContainer by lazy { (application as CallCenterApplication).container }
     private val viewModel: AgentViewModel by viewModels {
-        AgentViewModelFactory(appContainer.repository, appContainer.simCallManager)
+        AgentViewModelFactory(appContainer.repository, appContainer.simCallManager, appContainer.appModeStore)
+    }
+    private val offlineViewModel: OfflineViewModel by viewModels {
+        OfflineViewModelFactory(
+            appContainer.offlineRepository,
+            appContainer.simCallManager,
+            appContainer.offlineImportService,
+        )
     }
     private var updateJob: Job? = null
     private var dialCollectorStarted = false
     private var pendingRecordingAuthorization: com.company.callcenter.data.DialAuthorization? = null
+    private var backgroundLockJob: Job? = null
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) {
         permissionsReady.value = requiredPermissionsGranted()
         viewModel.refreshSimConfiguration()
-        if (permissionsReady.value && updateState.value == StartupUpdateState.Ready) viewModel.refresh()
+        offlineViewModel.refreshSimConfiguration()
+        if (permissionsReady.value && updateState.value == StartupUpdateState.Ready) {
+            when (appContainer.appModeStore.mode.value) {
+                AppMode.ONLINE -> viewModel.refresh()
+                AppMode.OFFLINE -> offlineViewModel.refresh()
+                null -> Unit
+            }
+        }
     }
 
     private val unknownSourcesLauncher = registerForActivityResult(
@@ -76,21 +100,52 @@ class MainActivity : ComponentActivity() {
         permissionsReady.value = requiredPermissionsGranted()
         setContent {
             val startupState = updateState.collectAsStateWithLifecycle().value
+            val appMode = appContainer.appModeStore.mode.collectAsStateWithLifecycle().value
+            val telemetryEnabled = appContainer.usageTelemetry.enabled.collectAsStateWithLifecycle().value
             CallCenterTheme {
                 if (startupState == StartupUpdateState.Ready) {
-                    AgentApp(
-                        viewModel = viewModel,
-                        permissionsGranted = permissionsReady.value,
-                        requestPermissions = {
-                            permissionLauncher.launch(
-                                arrayOf(
-                                    Manifest.permission.CALL_PHONE,
-                                    Manifest.permission.READ_CALL_LOG,
-                                    Manifest.permission.READ_PHONE_STATE,
-                                ),
-                            )
-                        },
-                    )
+                    val requestCallPermissions = {
+                        permissionLauncher.launch(
+                            arrayOf(
+                                Manifest.permission.CALL_PHONE,
+                                Manifest.permission.READ_CALL_LOG,
+                                Manifest.permission.READ_PHONE_STATE,
+                            ),
+                        )
+                    }
+                    when (appMode) {
+                        null -> AppModeScreen(
+                            onOnline = { appContainer.appModeStore.select(AppMode.ONLINE) },
+                            onOffline = { appContainer.appModeStore.select(AppMode.OFFLINE) },
+                        )
+                        AppMode.ONLINE -> AgentApp(
+                            viewModel = viewModel,
+                            permissionsGranted = permissionsReady.value,
+                            requestPermissions = requestCallPermissions,
+                            telemetryAvailable = appContainer.usageTelemetry.isAvailable,
+                            telemetryEnabled = telemetryEnabled,
+                            onTelemetryEnabledChange = appContainer.usageTelemetry::setEnabled,
+                            onUseOffline = {
+                                if (!viewModel.state.value.loading && !viewModel.state.value.hasPendingCall) {
+                                    appContainer.appModeStore.select(AppMode.OFFLINE)
+                                }
+                            },
+                        )
+                        AppMode.OFFLINE -> OfflineAgentApp(
+                            viewModel = offlineViewModel,
+                            permissionsGranted = permissionsReady.value,
+                            requestPermissions = requestCallPermissions,
+                            telemetryAvailable = appContainer.usageTelemetry.isAvailable,
+                            telemetryEnabled = telemetryEnabled,
+                            onTelemetryEnabledChange = appContainer.usageTelemetry::setEnabled,
+                            onUseOnline = {
+                                if (!offlineViewModel.state.value.loading && !offlineViewModel.state.value.hasPendingCall) {
+                                    offlineViewModel.lock()
+                                    appContainer.appModeStore.select(AppMode.ONLINE)
+                                }
+                            },
+                        )
+                    }
                 } else {
                     UpdateGateScreen(
                         state = startupState,
@@ -100,16 +155,57 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        lifecycleScope.launch {
+            appContainer.appModeStore.mode.collect { mode ->
+                if (mode == AppMode.OFFLINE) {
+                    window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                } else {
+                    window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                }
+            }
+        }
         beginUpdateCheck()
     }
 
     override fun onResume() {
         super.onResume()
+        backgroundLockJob?.cancel()
+        backgroundLockJob = null
         permissionsReady.value = requiredPermissionsGranted()
         if (updateState.value == StartupUpdateState.Ready) {
             viewModel.refreshSimConfiguration()
-            viewModel.onReturnedToForeground()
+            offlineViewModel.refreshSimConfiguration()
+            if (appContainer.appModeStore.mode.value == AppMode.OFFLINE) {
+                appContainer.offlineRepository.lockIfBackgroundTimeout(OFFLINE_AUTO_LOCK_MILLIS)
+            }
+            when (appContainer.appModeStore.mode.value) {
+                AppMode.ONLINE -> viewModel.onReturnedToForeground()
+                AppMode.OFFLINE -> offlineViewModel.onReturnedToForeground()
+                null -> Unit
+            }
         }
+    }
+
+    override fun onStop() {
+        if (appContainer.appModeStore.mode.value == AppMode.OFFLINE) {
+            appContainer.offlineRepository.markBackgrounded()
+            backgroundLockJob?.cancel()
+            backgroundLockJob = lifecycleScope.launch {
+                delay(OFFLINE_AUTO_LOCK_MILLIS)
+                if (appContainer.appModeStore.mode.value == AppMode.OFFLINE) {
+                    offlineViewModel.lock()
+                }
+            }
+        }
+        super.onStop()
+    }
+
+    override fun onDestroy() {
+        backgroundLockJob?.cancel()
+        if (isFinishing && dialCollectorStarted && appContainer.appModeStore.mode.value == AppMode.OFFLINE) {
+            offlineViewModel.lock()
+        }
+        super.onDestroy()
     }
 
     private fun beginUpdateCheck() {
@@ -130,7 +226,16 @@ class MainActivity : ComponentActivity() {
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Throwable) {
-                updateState.value = StartupUpdateState.Failed(failure.toUpdateMessage())
+                if (updateManager.canUseCachedPolicy(failure)) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "更新服务暂时不可达，已使用 72 小时内的版本校验结果",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                    unlockApplication()
+                } else {
+                    updateState.value = StartupUpdateState.Failed(failure.toUpdateMessage())
+                }
             }
         }
     }
@@ -177,6 +282,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun unlockApplication() {
+        if (appContainer.appModeStore.mode.value == AppMode.OFFLINE) {
+            appContainer.offlineRepository.lockIfBackgroundTimeout(OFFLINE_AUTO_LOCK_MILLIS)
+        }
         startDialCollector()
         updateState.value = StartupUpdateState.Ready
     }
@@ -185,18 +293,30 @@ class MainActivity : ComponentActivity() {
         if (dialCollectorStarted) return
         dialCollectorStarted = true
         lifecycleScope.launch {
-            repeatOnLifecycle(Lifecycle.State.STARTED) {
-                viewModel.dialEvents.collect { authorization ->
-                    if (authorization.recordingRequested &&
-                        ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
-                    ) {
-                        pendingRecordingAuthorization = authorization
-                        recordingPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                    } else {
-                        continueDial(authorization, granted = true)
-                    }
-                }
-            }
+            viewModel.dialEvents.collect(::consumeDialAuthorization)
+        }
+        lifecycleScope.launch {
+            offlineViewModel.dialEvents.collect(::consumeDialAuthorization)
+        }
+    }
+
+    private suspend fun consumeDialAuthorization(authorization: com.company.callcenter.data.DialAuthorization) {
+        if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) || !isAuthorizationUsable(authorization)) {
+            cancelAuthorization(authorization)
+            return
+        }
+        handleDialAuthorization(authorization)
+    }
+
+    private suspend fun handleDialAuthorization(authorization: com.company.callcenter.data.DialAuthorization) {
+        if (
+            authorization.recordingRequested &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
+        ) {
+            pendingRecordingAuthorization = authorization
+            recordingPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        } else {
+            continueDial(authorization, granted = true)
         }
     }
 
@@ -204,7 +324,13 @@ class MainActivity : ComponentActivity() {
         authorization: com.company.callcenter.data.DialAuthorization,
         granted: Boolean,
     ) {
-        if (authorization.recordingRequested &&
+        if (!isAuthorizationUsable(authorization)) {
+            cancelAuthorization(authorization)
+            return
+        }
+        if (
+            authorization.source == DialSource.ONLINE &&
+            authorization.recordingRequested &&
             (!granted || !appContainer.repository.startRecording(authorization.attemptId))
         ) {
             appContainer.repository.markRecordingUnsupported(
@@ -212,11 +338,39 @@ class MainActivity : ComponentActivity() {
                 if (granted) "VOICE_CALL_SOURCE_REJECTED" else "RECORD_AUDIO_PERMISSION_DENIED",
             )
         }
+        if (!isAuthorizationUsable(authorization)) {
+            if (authorization.source == DialSource.ONLINE) appContainer.repository.discardRecording()
+            cancelAuthorization(authorization)
+            return
+        }
         runCatching { appContainer.simCallManager.placeCall(authorization.phone) }
             .onFailure { failure ->
-                appContainer.repository.discardRecording()
-                viewModel.reportDialLaunchFailure(authorization.attemptId, failure)
+                if (authorization.source == DialSource.ONLINE) {
+                    appContainer.repository.discardRecording()
+                    viewModel.reportDialLaunchFailure(authorization.attemptId, failure)
+                } else {
+                    offlineViewModel.reportDialLaunchFailure(authorization.attemptId, failure)
+                }
             }
+    }
+
+    private fun isAuthorizationUsable(authorization: com.company.callcenter.data.DialAuthorization): Boolean =
+        when (authorization.source) {
+            DialSource.ONLINE -> appContainer.appModeStore.mode.value == AppMode.ONLINE &&
+                appContainer.repository.isLoggedIn
+            DialSource.OFFLINE -> OfflineDialAccessPolicy.canAuthorize(
+                appContainer.appModeStore.mode.value,
+                appContainer.offlineRepository.unlocked.value,
+            )
+        }
+
+    private suspend fun cancelAuthorization(authorization: com.company.callcenter.data.DialAuthorization) {
+        if (authorization.source == DialSource.ONLINE) {
+            appContainer.repository.discardRecording()
+            runCatching { appContainer.repository.cancelFailedCallAttempt(authorization.attemptId) }
+        } else {
+            appContainer.offlineRepository.cancelFailedCallAttempt(authorization.attemptId)
+        }
     }
 
     private fun Throwable.toUpdateMessage(): String = when ((this as? AppUpdateException)?.reason) {
@@ -244,5 +398,6 @@ class MainActivity : ComponentActivity() {
     private companion object {
         const val LOG_TAG = "CallCenterActivity"
         const val PROGRESS_STEP_BYTES = 256L * 1024L
+        const val OFFLINE_AUTO_LOCK_MILLIS = 60_000L
     }
 }

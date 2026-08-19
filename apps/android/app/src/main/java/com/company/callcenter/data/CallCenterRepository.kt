@@ -43,7 +43,17 @@ import java.io.IOException
 import java.time.Instant
 import java.util.UUID
 
-data class DialAuthorization(val attemptId: String, val phone: String, val recordingRequested: Boolean)
+enum class DialSource {
+    ONLINE,
+    OFFLINE,
+}
+
+data class DialAuthorization(
+    val attemptId: String,
+    val phone: String,
+    val recordingRequested: Boolean,
+    val source: DialSource = DialSource.ONLINE,
+)
 
 class CallCenterRepository(
     private val context: Context,
@@ -77,6 +87,20 @@ class CallCenterRepository(
     val hasPendingCall: Flow<Boolean> = dao.observeHasPendingCall()
     val serverConnection: StateFlow<ServerConnectionState> = _serverConnection.asStateFlow()
     val maxCallAttempts: StateFlow<Int> = _maxCallAttempts.asStateFlow()
+
+    fun statistics(range: CallStatisticsRange): Flow<CallStatistics> =
+        dao.observeStatistics(range.sinceMillis(System.currentTimeMillis())).map { row ->
+            CallStatistics(
+                callCount = row.callCount,
+                customerCount = row.customerCount,
+                connectedCount = row.connectedCount,
+                notConnectedCount = row.notConnectedCount,
+                unknownCount = row.unknownCount,
+                totalDurationSeconds = row.totalDurationSeconds,
+                averageDurationSeconds = row.averageDurationSeconds,
+                maximumDurationSeconds = row.maximumDurationSeconds,
+            )
+        }
 
     val isLoggedIn: Boolean
         get() = session.configuredServerUrl != null && session.accessToken != null && session.deviceId != null

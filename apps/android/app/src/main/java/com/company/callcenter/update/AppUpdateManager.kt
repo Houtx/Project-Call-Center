@@ -12,6 +12,7 @@ class AppUpdateManager(
     httpClient: OkHttpClient = defaultHttpClient(),
 ) {
     private val appContext = context.applicationContext
+    private val updateCheckStore = UpdateCheckStore(appContext)
     private val userAgent = "CallCenterAgent/${BuildConfig.VERSION_NAME} Android"
     private val packageVerifier = ApkPackageVerifier(appContext)
     private val manifestClient = ReleaseManifestClient(
@@ -27,12 +28,30 @@ class AppUpdateManager(
         currentVersionCode: Long = BuildConfig.VERSION_CODE.toLong(),
     ): UpdateCheckResult {
         val release = manifestClient.fetch()
+        val cached = updateCheckStore.recordSuccessfulCheck(release.versionCode)
+        val highestRequiredVersion = cached.highestSeenVersionCode
         return if (UpdatePolicy.requiresUpdate(currentVersionCode, release.versionCode)) {
             UpdateCheckResult.UpdateRequired(release)
+        } else if (currentVersionCode < highestRequiredVersion) {
+            throw AppUpdateException(
+                UpdateFailureReason.INVALID_METADATA,
+                "Update manifest is older than a previously observed release",
+            )
         } else {
             UpdateCheckResult.UpToDate
         }
     }
+
+    fun canUseCachedPolicy(
+        failure: Throwable,
+        currentVersionCode: Long = BuildConfig.VERSION_CODE.toLong(),
+        nowEpochMillis: Long = System.currentTimeMillis(),
+    ): Boolean = CachedUpdatePolicy.canUseCachedPolicy(
+        cached = updateCheckStore.read(),
+        failureReason = (failure as? AppUpdateException)?.reason,
+        currentVersionCode = currentVersionCode,
+        nowEpochMillis = nowEpochMillis,
+    )
 
     suspend fun downloadAndVerify(
         release: AppRelease,

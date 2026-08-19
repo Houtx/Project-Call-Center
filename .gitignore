@@ -18,11 +18,15 @@ apps/android/.idea/
 apps/android/**/build/
 *.jks
 *.keystore
+*.key
+*.p8
 *.p12
 *.pfx
 *.pem
 *.apk
 *.aab
+secrets.properties
+keystore.properties
 
 # Local runtime data
 .local-data/

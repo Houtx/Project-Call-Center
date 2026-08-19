@@ -66,6 +66,23 @@ interface CallCenterDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertHistory(item: CallHistoryEntity)
 
+    @Query(
+        """
+        SELECT
+          COUNT(*) AS callCount,
+          COUNT(DISTINCT assignmentId) AS customerCount,
+          COALESCE(SUM(CASE WHEN status = 'CONNECTED' THEN 1 ELSE 0 END), 0) AS connectedCount,
+          COALESCE(SUM(CASE WHEN status = 'NOT_CONNECTED' THEN 1 ELSE 0 END), 0) AS notConnectedCount,
+          COALESCE(SUM(CASE WHEN status = 'UNKNOWN' THEN 1 ELSE 0 END), 0) AS unknownCount,
+          COALESCE(SUM(CASE WHEN status = 'CONNECTED' THEN durationSeconds ELSE 0 END), 0) AS totalDurationSeconds,
+          COALESCE(AVG(CASE WHEN status = 'CONNECTED' THEN durationSeconds END), 0) AS averageDurationSeconds,
+          COALESCE(MAX(CASE WHEN status = 'CONNECTED' THEN durationSeconds ELSE 0 END), 0) AS maximumDurationSeconds
+        FROM call_history
+        WHERE startedAt >= :sinceMillis
+        """,
+    )
+    fun observeStatistics(sinceMillis: Long): Flow<CallStatisticsRow>
+
     @Query("DELETE FROM assigned_customers")
     suspend fun clearAssignments()
 

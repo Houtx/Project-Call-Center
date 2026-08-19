@@ -1,3 +1,5 @@
+import java.net.URI
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -17,6 +19,11 @@ val updateManifestUrl = providers.gradleProperty("CALL_CENTER_UPDATE_MANIFEST_UR
     .orEmpty()
 val updateReleasesBaseUrl = providers.gradleProperty("CALL_CENTER_UPDATE_RELEASES_BASE_URL")
     .orElse(providers.environmentVariable("CALL_CENTER_UPDATE_RELEASES_BASE_URL"))
+    .orNull
+    ?.trim()
+    .orEmpty()
+val telemetryUrl = providers.gradleProperty("CALL_CENTER_TELEMETRY_URL")
+    .orElse(providers.environmentVariable("CALL_CENTER_TELEMETRY_URL"))
     .orNull
     ?.trim()
     .orEmpty()
@@ -49,6 +56,19 @@ if (updateReleasesBaseUrl.isNotBlank()) {
         "CALL_CENTER_UPDATE_RELEASES_BASE_URL must use HTTPS and end with /"
     }
 }
+if (telemetryUrl.isNotBlank()) {
+    val parsedTelemetryUrl = runCatching { URI(telemetryUrl) }.getOrNull()
+    require(
+        parsedTelemetryUrl != null &&
+            parsedTelemetryUrl.scheme.equals("https", ignoreCase = true) &&
+            !parsedTelemetryUrl.host.isNullOrBlank() &&
+            (parsedTelemetryUrl.port == -1 || parsedTelemetryUrl.port in 1..65_535) &&
+            parsedTelemetryUrl.userInfo == null &&
+            parsedTelemetryUrl.fragment == null
+    ) {
+        "CALL_CENTER_TELEMETRY_URL must be an HTTPS URL without credentials or a fragment"
+    }
+}
 if (releaseRequested && (updateManifestUrl.isBlank() || updateReleasesBaseUrl.isBlank())) {
     throw GradleException(
         "Release builds require CALL_CENTER_UPDATE_MANIFEST_URL and CALL_CENTER_UPDATE_RELEASES_BASE_URL",
@@ -77,8 +97,8 @@ android {
         applicationId = "com.company.callcenter"
         minSdk = 31
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.3.0"
+        versionCode = 4
+        versionName = "0.4.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -89,6 +109,7 @@ android {
         )
         buildConfigField("String", "UPDATE_MANIFEST_URL", updateManifestUrl.asBuildConfigString())
         buildConfigField("String", "UPDATE_RELEASES_BASE_URL", updateReleasesBaseUrl.asBuildConfigString())
+        buildConfigField("String", "TELEMETRY_URL", telemetryUrl.asBuildConfigString())
         buildConfigField("String", "DEBUG_AGENT_USERNAME", "".asBuildConfigString())
         buildConfigField("String", "DEBUG_AGENT_PASSWORD", "".asBuildConfigString())
     }
