@@ -37,6 +37,7 @@ internal class XlsxSpreadsheetParser(private val file: File) {
         startRow: Int,
         endRowInclusive: Int?,
         limit: Int?,
+        onRowRead: (rowNumber: Int) -> Unit,
     ): SpreadsheetColumnData =
         withArchive { archive ->
             val sheet = readWorkbook(archive).firstOrNull { it.id == sheetId }
@@ -44,6 +45,7 @@ internal class XlsxSpreadsheetParser(private val file: File) {
             val tokens = ArrayList<RowToken>()
             var first = true
             parseSheet(archive, sheet) { rowNumber, cells, _ ->
+                onRowRead(rowNumber)
                 val skip = first && skipHeader
                 first = false
                 if (!skip && rowNumber >= startRow && (endRowInclusive == null || rowNumber <= endRowInclusive)) {

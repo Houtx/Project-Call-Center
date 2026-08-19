@@ -31,6 +31,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.coroutines.coroutineContext
+import java.util.concurrent.atomic.AtomicBoolean
 
 data class AgentUiState(
     val loggedIn: Boolean = false,
@@ -67,6 +68,7 @@ class AgentViewModel(
     private val dialChannel = Channel<DialAuthorization>(capacity = Channel.BUFFERED)
     val dialEvents = dialChannel.receiveAsFlow()
     private val statisticsRange = MutableStateFlow(CallStatisticsRange.TODAY)
+    private val operationInProgress = AtomicBoolean(false)
     private val statistics = statisticsRange.flatMapLatest(repository::statistics)
     private val assignmentsWithPolicy = combine(
         repository.assignments,
@@ -298,6 +300,7 @@ class AgentViewModel(
     }
 
     private fun launchBusy(clearError: Boolean = true, block: suspend () -> Unit) {
+        if (!operationInProgress.compareAndSet(false, true)) return
         viewModelScope.launch {
             transient.value = transient.value.copy(loading = true, error = if (clearError) null else transient.value.error)
             try {
@@ -307,6 +310,7 @@ class AgentViewModel(
             } catch (failure: Throwable) {
                 transient.value = transient.value.copy(error = failure.message ?: "操作失败，请稍后重试")
             } finally {
+                operationInProgress.set(false)
                 transient.value = transient.value.copy(loading = false)
             }
         }

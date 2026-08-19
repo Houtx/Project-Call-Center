@@ -49,11 +49,64 @@ interface OfflineDao {
     )
     fun observeNotConnectedContactCount(startMillis: Long?, endExclusiveMillis: Long?): Flow<Int>
 
-    @Query("SELECT * FROM offline_contacts ORDER BY queueOrder ASC LIMIT :limit")
-    fun observeAllContacts(limit: Int): Flow<List<OfflineContactEntity>>
+    @Query(
+        """
+        SELECT * FROM offline_contacts
+        WHERE (:phoneHash IS NULL OR phoneHash = :phoneHash)
+          AND (:maskedQuery IS NULL OR phoneMasked LIKE '%' || :maskedQuery || '%')
+          AND (:importBatchId IS NULL OR offline_contacts.importBatchId = :importBatchId)
+          AND (:startMillis IS NULL OR importedAt >= :startMillis)
+          AND (:endExclusiveMillis IS NULL OR importedAt < :endExclusiveMillis)
+          AND (
+            :callStatus = 'ALL'
+            OR (:callStatus = 'NOT_CALLED' AND attemptCount = 0)
+            OR (:callStatus = 'PENDING' AND state IN ('READY', 'RETRY'))
+            OR (:callStatus = 'CONNECTED' AND lastResult = 'CONNECTED')
+            OR (:callStatus = 'NOT_CONNECTED' AND lastResult = 'NOT_CONNECTED')
+            OR (:callStatus = 'UNKNOWN' AND lastResult = 'UNKNOWN')
+            OR (:callStatus = 'COLLECTING' AND state = 'COLLECTING')
+          )
+        ORDER BY queueOrder ASC
+        LIMIT :limit
+        """,
+    )
+    fun observeAllContacts(
+        phoneHash: String?,
+        maskedQuery: String?,
+        importBatchId: String?,
+        startMillis: Long?,
+        endExclusiveMillis: Long?,
+        callStatus: String,
+        limit: Int,
+    ): Flow<List<OfflineContactEntity>>
 
-    @Query("SELECT COUNT(*) FROM offline_contacts")
-    fun observeAllContactCount(): Flow<Int>
+    @Query(
+        """
+        SELECT COUNT(*) FROM offline_contacts
+        WHERE (:phoneHash IS NULL OR phoneHash = :phoneHash)
+          AND (:maskedQuery IS NULL OR phoneMasked LIKE '%' || :maskedQuery || '%')
+          AND (:importBatchId IS NULL OR offline_contacts.importBatchId = :importBatchId)
+          AND (:startMillis IS NULL OR importedAt >= :startMillis)
+          AND (:endExclusiveMillis IS NULL OR importedAt < :endExclusiveMillis)
+          AND (
+            :callStatus = 'ALL'
+            OR (:callStatus = 'NOT_CALLED' AND attemptCount = 0)
+            OR (:callStatus = 'PENDING' AND state IN ('READY', 'RETRY'))
+            OR (:callStatus = 'CONNECTED' AND lastResult = 'CONNECTED')
+            OR (:callStatus = 'NOT_CONNECTED' AND lastResult = 'NOT_CONNECTED')
+            OR (:callStatus = 'UNKNOWN' AND lastResult = 'UNKNOWN')
+            OR (:callStatus = 'COLLECTING' AND state = 'COLLECTING')
+          )
+        """,
+    )
+    fun observeAllContactCount(
+        phoneHash: String?,
+        maskedQuery: String?,
+        importBatchId: String?,
+        startMillis: Long?,
+        endExclusiveMillis: Long?,
+        callStatus: String,
+    ): Flow<Int>
 
     @Query("SELECT * FROM offline_contacts WHERE id = :contactId")
     suspend fun contact(contactId: String): OfflineContactEntity?
@@ -98,6 +151,16 @@ interface OfflineDao {
 
     @Query("DELETE FROM offline_import_batches WHERE id = :batchId")
     suspend fun deleteImportBatch(batchId: String): Int
+
+    @Transaction
+    suspend fun deleteImportBatchAndContacts(batchId: String): Int {
+        check(!hasPendingCallForImportBatch(batchId)) {
+            "这次导入包含正在采集通话结果的号码，请通话结束并完成采集后再删除"
+        }
+        val deletedContacts = deleteContactsForImportBatch(batchId)
+        check(deleteImportBatch(batchId) == 1) { "导入记录不存在或已被删除" }
+        return deletedContacts
+    }
 
     @Query("SELECT * FROM offline_pending_calls ORDER BY initiatedAt ASC")
     suspend fun pendingCalls(): List<OfflinePendingCallEntity>

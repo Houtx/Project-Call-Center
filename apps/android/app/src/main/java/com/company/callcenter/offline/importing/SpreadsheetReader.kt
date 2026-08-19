@@ -30,6 +30,7 @@ class SpreadsheetReader {
         startRow: Int = 1,
         endRowInclusive: Int? = null,
         limit: Int? = null,
+        onRowRead: (rowNumber: Int) -> Unit = {},
     ): SpreadsheetColumnData = guardedRead {
         validateFile(file)
         if (columnIndex !in 0 until ImportLimits.MAX_COLUMNS) {
@@ -55,6 +56,7 @@ class SpreadsheetReader {
                 startRow,
                 endRowInclusive,
                 limit,
+                onRowRead,
             )
             ContainerKind.TEXT -> CsvSpreadsheetParser(file).readColumn(
                 sheetId,
@@ -63,6 +65,7 @@ class SpreadsheetReader {
                 startRow,
                 endRowInclusive,
                 limit,
+                onRowRead,
             )
             ContainerKind.OLE -> throw SpreadsheetReadException(
                 SpreadsheetFailureReason.ENCRYPTED_FILE,

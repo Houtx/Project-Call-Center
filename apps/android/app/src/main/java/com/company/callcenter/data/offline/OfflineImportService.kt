@@ -72,8 +72,13 @@ class OfflineImportService(
         phoneColumnIndex: Int,
         skipHeader: Boolean,
         rowRange: OfflineSpreadsheetRowRange,
+        estimatedLastRow: Int,
+        onProgress: (Float) -> Unit = {},
     ): OfflineSpreadsheetImportDraft = withContext(Dispatchers.IO) {
         check(session.file.isFile) { "导入文件已失效，请重新选择" }
+        val effectiveEndRow = rowRange.endRowInclusive ?: estimatedLastRow
+        val expectedRows = (effectiveEndRow - rowRange.startRow + 1).coerceAtLeast(1)
+        var reportedPercent = -1
         val phoneCells = reader.readColumn(
             file = session.file,
             sheetId = sheetId,
@@ -81,6 +86,14 @@ class OfflineImportService(
             skipHeader = skipHeader,
             startRow = rowRange.startRow,
             endRowInclusive = rowRange.endRowInclusive,
+            onRowRead = { rowNumber ->
+                val processedRows = (rowNumber - rowRange.startRow + 1).coerceIn(0, expectedRows)
+                val percent = processedRows * 100 / expectedRows
+                if (percent != reportedPercent) {
+                    reportedPercent = percent
+                    onProgress(percent / 100f)
+                }
+            },
         )
         var invalid = 0
         val records = phoneCells.cells.mapNotNull { cell ->
@@ -92,6 +105,7 @@ class OfflineImportService(
                 OfflineImportContact(phone = phone, name = null)
             }
         }
+        onProgress(1f)
         OfflineSpreadsheetImportDraft(records, invalid)
     }
 

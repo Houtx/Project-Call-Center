@@ -37,9 +37,17 @@ class CsvSpreadsheetReaderTest {
         assertEquals(true, phoneColumn.suggestsHeader)
         assertEquals(2.0 / 3.0, phoneColumn.validRate, 0.0)
 
-        val data = reader.readColumn(file, preview.sheets.single().id, 1, skipHeader = true)
+        val rowsRead = mutableListOf<Int>()
+        val data = reader.readColumn(
+            file,
+            preview.sheets.single().id,
+            1,
+            skipHeader = true,
+            onRowRead = rowsRead::add,
+        )
         assertEquals(listOf("13800138000", "1.3900139E10"), data.cells.map { it.value })
         assertEquals(listOf(2, 3), data.cells.map { it.rowNumber })
+        assertEquals(listOf(1, 2, 3), rowsRead)
     }
 
     @Test

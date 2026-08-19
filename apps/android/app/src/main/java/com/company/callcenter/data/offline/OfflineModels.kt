@@ -26,6 +26,23 @@ enum class OfflineMissedDatePreset {
     CUSTOM,
 }
 
+enum class OfflineAllCallStatus {
+    ALL,
+    NOT_CALLED,
+    PENDING,
+    CONNECTED,
+    NOT_CONNECTED,
+    UNKNOWN,
+    COLLECTING,
+}
+
+data class OfflineAllTaskFilter(
+    val phoneQuery: String = "",
+    val callStatus: OfflineAllCallStatus = OfflineAllCallStatus.ALL,
+    val createdDateFilter: OfflineMissedDateFilter = OfflineMissedDateFilter(),
+    val importBatchId: String? = null,
+)
+
 data class OfflineMissedDateFilter(
     val preset: OfflineMissedDatePreset = OfflineMissedDatePreset.ALL,
     val startMillis: Long? = null,

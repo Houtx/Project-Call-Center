@@ -10,11 +10,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccountCircle
@@ -30,6 +32,7 @@ import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.PhoneAndroid
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Remove
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -38,6 +41,8 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.DateRangePicker
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -66,11 +71,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.company.callcenter.data.offline.OfflineCallRecord
 import com.company.callcenter.data.offline.OfflineCallResult
+import com.company.callcenter.data.offline.OfflineAllCallStatus
 import com.company.callcenter.data.offline.OfflineContact
 import com.company.callcenter.data.offline.OfflineContactState
 import com.company.callcenter.data.offline.OfflineMissedDatePreset
@@ -90,25 +97,28 @@ fun OfflineAgentApp(
     onUseOnline: () -> Unit,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    when {
-        !state.configured -> OfflinePasswordSetupScreen(state.loading, state.error, viewModel::createPassword, onUseOnline)
-        !state.unlocked -> OfflineUnlockScreen(
-            loading = state.loading,
-            error = state.error,
-            retryAfterSeconds = state.unlockRetryAfterSeconds,
-            onUnlock = viewModel::unlock,
-            onUseOnline = onUseOnline,
-        )
-        else -> OfflineMainScreen(
-            state = state,
-            permissionsGranted = permissionsGranted,
-            requestPermissions = requestPermissions,
-            telemetryAvailable = telemetryAvailable,
-            telemetryEnabled = telemetryEnabled,
-            onTelemetryEnabledChange = onTelemetryEnabledChange,
-            viewModel = viewModel,
-            onUseOnline = onUseOnline,
-        )
+    Box(Modifier.fillMaxSize()) {
+        when {
+            !state.configured -> OfflinePasswordSetupScreen(state.loading, state.error, viewModel::createPassword, onUseOnline)
+            !state.unlocked -> OfflineUnlockScreen(
+                loading = state.loading,
+                error = state.error,
+                retryAfterSeconds = state.unlockRetryAfterSeconds,
+                onUnlock = viewModel::unlock,
+                onUseOnline = onUseOnline,
+            )
+            else -> OfflineMainScreen(
+                state = state,
+                permissionsGranted = permissionsGranted,
+                requestPermissions = requestPermissions,
+                telemetryAvailable = telemetryAvailable,
+                telemetryEnabled = telemetryEnabled,
+                onTelemetryEnabledChange = onTelemetryEnabledChange,
+                viewModel = viewModel,
+                onUseOnline = onUseOnline,
+            )
+        }
+        if (state.loading) BlockingLoadingOverlay(state.loadingMessage, state.loadingProgress)
     }
 }
 
@@ -355,7 +365,6 @@ private fun OfflineMainScreen(
                     onUseOnline = onUseOnline,
                 )
             }
-            if (state.loading) CircularProgressIndicator(Modifier.align(Alignment.TopCenter))
         }
     }
 }
@@ -368,23 +377,28 @@ private fun OfflineTaskList(
     requestPermissions: () -> Unit,
     viewModel: OfflineViewModel,
 ) {
-    var showCustomRangePicker by remember { mutableStateOf(false) }
-    if (showCustomRangePicker) {
+    var customDateTarget by remember { mutableStateOf<OfflineTaskFilter?>(null) }
+    var phoneQuery by remember(state.allTaskFilter.phoneQuery) { mutableStateOf(state.allTaskFilter.phoneQuery) }
+    if (customDateTarget != null) {
         val pickerState = androidx.compose.material3.rememberDateRangePickerState()
         DatePickerDialog(
-            onDismissRequest = { showCustomRangePicker = false },
+            onDismissRequest = { customDateTarget = null },
             confirmButton = {
                 TextButton(
                     onClick = {
                         val start = pickerState.selectedStartDateMillis ?: return@TextButton
                         val end = pickerState.selectedEndDateMillis ?: start
-                        viewModel.setCustomMissedDateRange(start, end)
-                        showCustomRangePicker = false
+                        if (customDateTarget == OfflineTaskFilter.ALL) {
+                            viewModel.setCustomAllCreatedDateRange(start, end)
+                        } else {
+                            viewModel.setCustomMissedDateRange(start, end)
+                        }
+                        customDateTarget = null
                     },
                     enabled = pickerState.selectedStartDateMillis != null,
                 ) { Text("确定") }
             },
-            dismissButton = { TextButton(onClick = { showCustomRangePicker = false }) { Text("取消") } },
+            dismissButton = { TextButton(onClick = { customDateTarget = null }) { Text("取消") } },
         ) {
             DateRangePicker(state = pickerState, modifier = Modifier.fillMaxWidth().height(500.dp))
         }
@@ -434,7 +448,9 @@ private fun OfflineTaskList(
                     ).forEach { (preset, label) ->
                         OutlinedButton(
                             onClick = {
-                                if (preset == OfflineMissedDatePreset.CUSTOM) showCustomRangePicker = true
+                                if (preset == OfflineMissedDatePreset.CUSTOM) {
+                                    customDateTarget = OfflineTaskFilter.NOT_CONNECTED
+                                }
                                 else viewModel.setMissedDatePreset(preset)
                             },
                             modifier = Modifier.weight(1f),
@@ -448,6 +464,29 @@ private fun OfflineTaskList(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+            }
+        }
+        if (state.taskFilter == OfflineTaskFilter.ALL) {
+            item {
+                AllTaskFilters(
+                    state = state,
+                    phoneQuery = phoneQuery,
+                    onPhoneQueryChange = { phoneQuery = it.filter(Char::isDigit).take(11) },
+                    onSearch = { viewModel.applyAllPhoneQuery(phoneQuery) },
+                    onStatusChange = viewModel::setAllCallStatus,
+                    onImportBatchChange = viewModel::setAllImportBatch,
+                    onDatePresetChange = { preset ->
+                        if (preset == OfflineMissedDatePreset.CUSTOM) {
+                            customDateTarget = OfflineTaskFilter.ALL
+                        } else {
+                            viewModel.setAllCreatedDatePreset(preset)
+                        }
+                    },
+                    onReset = {
+                        phoneQuery = ""
+                        viewModel.resetAllTaskFilters()
+                    },
+                )
             }
         }
         if (!permissionsGranted) item { OfflinePermissionBanner(requestPermissions) }
@@ -467,6 +506,106 @@ private fun OfflineTaskList(
             )
         }
         item { Spacer(Modifier.height(8.dp)) }
+    }
+}
+
+@Composable
+private fun AllTaskFilters(
+    state: OfflineUiState,
+    phoneQuery: String,
+    onPhoneQueryChange: (String) -> Unit,
+    onSearch: () -> Unit,
+    onStatusChange: (OfflineAllCallStatus) -> Unit,
+    onImportBatchChange: (String?) -> Unit,
+    onDatePresetChange: (OfflineMissedDatePreset) -> Unit,
+    onReset: () -> Unit,
+) {
+    var statusMenuOpen by remember { mutableStateOf(false) }
+    var batchMenuOpen by remember { mutableStateOf(false) }
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+        Column(
+            Modifier.fillMaxWidth().padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("筛选全部任务", fontWeight = FontWeight.Medium)
+            OutlinedTextField(
+                value = phoneQuery,
+                onValueChange = onPhoneQueryChange,
+                label = { Text("号码搜索") },
+                supportingText = { Text("完整 11 位号码，或输入前 3 位/后 4 位") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone, imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { onSearch() }),
+                singleLine = true,
+                trailingIcon = {
+                    IconButton(onClick = onSearch) { Icon(Icons.Outlined.Search, contentDescription = "查询号码") }
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Box {
+                OutlinedButton(onClick = { statusMenuOpen = true }, modifier = Modifier.fillMaxWidth()) {
+                    Text("呼叫状态：${allCallStatusLabel(state.allTaskFilter.callStatus)}")
+                }
+                DropdownMenu(expanded = statusMenuOpen, onDismissRequest = { statusMenuOpen = false }) {
+                    OfflineAllCallStatus.entries.forEach { status ->
+                        DropdownMenuItem(
+                            text = { Text(allCallStatusLabel(status)) },
+                            onClick = {
+                                statusMenuOpen = false
+                                onStatusChange(status)
+                            },
+                        )
+                    }
+                }
+            }
+            Box {
+                val selectedBatch = state.importBatches.firstOrNull { it.id == state.allTaskFilter.importBatchId }
+                OutlinedButton(onClick = { batchMenuOpen = true }, modifier = Modifier.fillMaxWidth()) {
+                    Text("导入记录：${selectedBatch?.displayName ?: "全部记录"}", maxLines = 1)
+                }
+                DropdownMenu(expanded = batchMenuOpen, onDismissRequest = { batchMenuOpen = false }) {
+                    DropdownMenuItem(
+                        text = { Text("全部导入记录") },
+                        onClick = {
+                            batchMenuOpen = false
+                            onImportBatchChange(null)
+                        },
+                    )
+                    state.importBatches.forEach { batch ->
+                        DropdownMenuItem(
+                            text = { Text("${offlineFormatTime(batch.createdAt)} · ${batch.displayName}") },
+                            onClick = {
+                                batchMenuOpen = false
+                                onImportBatchChange(batch.id)
+                            },
+                        )
+                    }
+                }
+            }
+            Text("创建日期", style = MaterialTheme.typography.bodySmall)
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                listOf(
+                    OfflineMissedDatePreset.ALL to "全部时间",
+                    OfflineMissedDatePreset.THIS_WEEK to "本周导入",
+                    OfflineMissedDatePreset.CUSTOM to "自定义",
+                ).forEach { (preset, label) ->
+                    OutlinedButton(onClick = { onDatePresetChange(preset) }) { Text(label) }
+                }
+            }
+            if (state.allTaskFilter.createdDateFilter.preset != OfflineMissedDatePreset.ALL) {
+                Text(
+                    createdDateFilterLabel(state.allTaskFilter.createdDateFilter),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onReset, modifier = Modifier.weight(1f)) { Text("重置") }
+                Button(onClick = onSearch, modifier = Modifier.weight(1f)) { Text("查询") }
+            }
+        }
     }
 }
 
@@ -721,6 +860,26 @@ private fun missedDateFilterLabel(filter: com.company.callcenter.data.offline.Of
         OfflineMissedDatePreset.CUSTOM -> "筛选范围：$start 至 $end"
         OfflineMissedDatePreset.ALL -> ""
     }
+}
+
+private fun createdDateFilterLabel(filter: com.company.callcenter.data.offline.OfflineMissedDateFilter): String {
+    val start = filter.startMillis?.let(::offlineFormatDate).orEmpty()
+    val end = filter.endExclusiveMillis?.minus(1)?.let(::offlineFormatDate).orEmpty()
+    return when (filter.preset) {
+        OfflineMissedDatePreset.THIS_WEEK -> "本周导入：$start 至 $end"
+        OfflineMissedDatePreset.CUSTOM -> "创建日期：$start 至 $end"
+        OfflineMissedDatePreset.ALL -> ""
+    }
+}
+
+private fun allCallStatusLabel(status: OfflineAllCallStatus): String = when (status) {
+    OfflineAllCallStatus.ALL -> "全部状态"
+    OfflineAllCallStatus.NOT_CALLED -> "从未外呼"
+    OfflineAllCallStatus.PENDING -> "当前待呼"
+    OfflineAllCallStatus.CONNECTED -> "已接通"
+    OfflineAllCallStatus.NOT_CONNECTED -> "未接通"
+    OfflineAllCallStatus.UNKNOWN -> "结果未知"
+    OfflineAllCallStatus.COLLECTING -> "采集中"
 }
 
 private val offlineDateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd").withZone(ZoneId.of("Asia/Shanghai"))

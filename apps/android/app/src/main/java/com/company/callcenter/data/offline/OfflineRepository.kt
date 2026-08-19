@@ -65,6 +65,7 @@ class OfflineRepository(
     fun taskPage(
         filter: OfflineTaskFilter,
         dateFilter: OfflineMissedDateFilter,
+        allFilter: OfflineAllTaskFilter,
     ): Flow<OfflineTaskPage> = unlocked.flatMapLatest { isUnlocked ->
         if (!isUnlocked) {
             flowOf(OfflineTaskPage())
@@ -88,8 +89,26 @@ class OfflineRepository(
                     )
                 }
                 OfflineTaskFilter.ALL -> {
-                    rows = dao.observeAllContacts(TASK_PAGE_SIZE)
-                    count = dao.observeAllContactCount()
+                    val digits = allFilter.phoneQuery.filter(Char::isDigit)
+                    val phoneHash = digits.takeIf { it.length == 11 }?.let(access::phoneHash)
+                    val maskedQuery = digits.takeIf { it.length in 1..4 }
+                    rows = dao.observeAllContacts(
+                        phoneHash = phoneHash,
+                        maskedQuery = maskedQuery,
+                        importBatchId = allFilter.importBatchId,
+                        startMillis = allFilter.createdDateFilter.startMillis,
+                        endExclusiveMillis = allFilter.createdDateFilter.endExclusiveMillis,
+                        callStatus = allFilter.callStatus.name,
+                        limit = TASK_PAGE_SIZE,
+                    )
+                    count = dao.observeAllContactCount(
+                        phoneHash = phoneHash,
+                        maskedQuery = maskedQuery,
+                        importBatchId = allFilter.importBatchId,
+                        startMillis = allFilter.createdDateFilter.startMillis,
+                        endExclusiveMillis = allFilter.createdDateFilter.endExclusiveMillis,
+                        callStatus = allFilter.callStatus.name,
+                    )
                 }
             }
             combine(rows, count) { contacts, total ->
@@ -169,6 +188,7 @@ class OfflineRepository(
         invalidCount: Int = 0,
         duplicateCount: Int = 0,
         metadata: OfflineImportMetadata,
+        onProgress: (processed: Int, total: Int) -> Unit = { _, _ -> },
     ): OfflineImportResult = withContext(Dispatchers.IO) {
         checkUnlocked()
         importMutex.withLock {
@@ -189,10 +209,12 @@ class OfflineRepository(
 
             val batchId = UUID.randomUUID().toString()
             val importedAt = clock()
+            onProgress(0, unique.size)
             database.withTransaction {
                 dao.insertImportBatch(metadata.toEntity(batchId, importedAt))
                 var queueOrder = dao.maximumQueueOrder()
                 var added = 0
+                var processed = 0
                 unique.entries.chunked(IMPORT_CHUNK_SIZE).forEach { chunk ->
                     val entities = chunk.map { (hash, phoneAndName) ->
                         val (phone, name) = phoneAndName
@@ -214,6 +236,8 @@ class OfflineRepository(
                         )
                     }
                     added += dao.insertContacts(entities).count { rowId -> rowId != -1L }
+                    processed += chunk.size
+                    onProgress(processed, unique.size)
                 }
                 val result = OfflineImportResult(
                     addedCount = added,
@@ -221,6 +245,7 @@ class OfflineRepository(
                     invalidCount = invalid,
                 )
                 dao.finishImportBatch(batchId, result.addedCount, result.duplicateCount, result.invalidCount)
+                onProgress(unique.size, unique.size)
                 result
             }
         }
@@ -235,14 +260,7 @@ class OfflineRepository(
         importMutex.withLock {
             callStateCoordinator.serialized {
                 checkUnlocked()
-                database.withTransaction {
-                    check(!dao.hasPendingCallForImportBatch(batchId)) {
-                        "这次导入包含正在采集通话结果的号码，请通话结束并完成采集后再删除"
-                    }
-                    val deleted = dao.deleteContactsForImportBatch(batchId)
-                    check(dao.deleteImportBatch(batchId) == 1) { "导入记录不存在或已被删除" }
-                    OfflineImportDeleteResult(deleted)
-                }
+                OfflineImportDeleteResult(dao.deleteImportBatchAndContacts(batchId))
             }
         }
     }

@@ -33,6 +33,7 @@ internal class CsvSpreadsheetParser(private val file: File) {
         startRow: Int,
         endRowInclusive: Int?,
         limit: Int?,
+        onRowRead: (rowNumber: Int) -> Unit,
     ): SpreadsheetColumnData {
         if (sheetId != SHEET_ID) {
             throw SpreadsheetReadException(SpreadsheetFailureReason.SHEET_NOT_FOUND, "找不到所选工作表")
@@ -40,6 +41,7 @@ internal class CsvSpreadsheetParser(private val file: File) {
         val cells = ArrayList<SpreadsheetCellValue>()
         var firstRow = true
         parseRecords { rowNumber, values ->
+            onRowRead(rowNumber)
             val skip = skipHeader && firstRow
             firstRow = false
             if (!skip && rowNumber >= startRow && (endRowInclusive == null || rowNumber <= endRowInclusive)) {

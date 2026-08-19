@@ -88,20 +88,23 @@ fun AgentApp(
     onUseOffline: () -> Unit,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    if (!state.loggedIn) {
-        LoginScreen(state, viewModel::signIn, onUseOffline)
-        return
+    Box(Modifier.fillMaxSize()) {
+        if (!state.loggedIn) {
+            LoginScreen(state, viewModel::signIn, onUseOffline)
+        } else {
+            MainScreen(
+                state = state,
+                permissionsGranted = permissionsGranted,
+                requestPermissions = requestPermissions,
+                telemetryAvailable = telemetryAvailable,
+                telemetryEnabled = telemetryEnabled,
+                onTelemetryEnabledChange = onTelemetryEnabledChange,
+                viewModel = viewModel,
+                onUseOffline = onUseOffline,
+            )
+        }
+        if (state.loading) BlockingLoadingOverlay()
     }
-    MainScreen(
-        state = state,
-        permissionsGranted = permissionsGranted,
-        requestPermissions = requestPermissions,
-        telemetryAvailable = telemetryAvailable,
-        telemetryEnabled = telemetryEnabled,
-        onTelemetryEnabledChange = onTelemetryEnabledChange,
-        viewModel = viewModel,
-        onUseOffline = onUseOffline,
-    )
 }
 
 @Composable
@@ -276,7 +279,6 @@ private fun MainScreen(
                     onUseOffline,
                 )
             }
-            if (state.loading) CircularProgressIndicator(Modifier.align(Alignment.TopCenter))
         }
     }
 }

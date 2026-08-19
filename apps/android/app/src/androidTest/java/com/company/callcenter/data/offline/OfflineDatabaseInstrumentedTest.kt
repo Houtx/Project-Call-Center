@@ -79,6 +79,28 @@ class OfflineDatabaseInstrumentedTest {
     }
 
     @Test
+    fun allTaskQueryFiltersByImportDateStatusAndPhoneWithoutLoadingEveryRow() = runTest {
+        val dao = createDatabase().dao()
+        dao.insertContacts(
+            listOf(
+                contact(1, importedAt = 100, phoneHash = "full-phone", phoneMasked = "138****8000"),
+                contact(2, result = "CONNECTED", attemptedAt = 200, importedAt = 200, phoneMasked = "139****9000"),
+                contact(3, result = "NOT_CONNECTED", attemptedAt = 300, importedAt = 300),
+            ),
+        )
+
+        assertEquals(
+            listOf("1"),
+            dao.observeAllContacts("full-phone", null, null, null, null, "ALL", 100).first().map { it.id },
+        )
+        assertEquals(
+            listOf("2"),
+            dao.observeAllContacts(null, "9000", null, 150, 250, "CONNECTED", 100).first().map { it.id },
+        )
+        assertEquals(1, dao.observeAllContactCount(null, null, null, 250, null, "NOT_CONNECTED").first())
+    }
+
+    @Test
     fun missedQueryUsesDateBoundariesAndQueueOrder() = runTest {
         val dao = createDatabase().dao()
         dao.insertContacts(
@@ -117,6 +139,28 @@ class OfflineDatabaseInstrumentedTest {
         assertTrue(dao.hasPendingCallForImportBatch("batch"))
     }
 
+    @Test
+    fun deletingImportBatchRemovesOnlyItsContactsAndDoesNotCreateHistoryRows() = runTest {
+        val dao = createDatabase().dao()
+        dao.insertImportBatch(importBatch("first"))
+        dao.insertImportBatch(importBatch("second"))
+        dao.insertContacts(
+            listOf(
+                contact(1, importBatchId = "first"),
+                contact(2, importBatchId = "first"),
+                contact(3, importBatchId = "second"),
+            ),
+        )
+
+        assertEquals(2, dao.deleteImportBatchAndContacts("first"))
+        assertEquals(listOf("second"), dao.observeImportBatches().first().map { it.id })
+        assertEquals(listOf("3"), dao.observeAllContacts(null, null, null, null, null, "ALL", 100).first().map { it.id })
+        assertEquals(
+            listOf("3"),
+            dao.observeAllContacts(null, null, "second", null, null, "ALL", 100).first().map { it.id },
+        )
+    }
+
     private fun createDatabase(): OfflineDatabase = Room.inMemoryDatabaseBuilder(context, OfflineDatabase::class.java)
         .allowMainThreadQueries()
         .build()
@@ -127,13 +171,16 @@ class OfflineDatabaseInstrumentedTest {
         result: String? = null,
         attemptedAt: Long? = null,
         importBatchId: String? = null,
+        importedAt: Long = 1,
+        phoneHash: String = "hash-$number",
+        phoneMasked: String = "138****8000",
     ) = OfflineContactEntity(
         id = number.toString(),
         encryptedPhone = "encrypted-$number",
-        phoneHash = "hash-$number",
-        phoneMasked = "138****8000",
+        phoneHash = phoneHash,
+        phoneMasked = phoneMasked,
         encryptedName = null,
-        importedAt = 1,
+        importedAt = importedAt,
         state = if (result == null) "READY" else "RETRY",
         attemptCount = if (result == null) 0 else 1,
         lastResult = result,

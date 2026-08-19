@@ -8,6 +8,8 @@ import com.company.callcenter.data.CallStatistics
 import com.company.callcenter.data.CallStatisticsRange
 import com.company.callcenter.data.DialAuthorization
 import com.company.callcenter.data.offline.OfflineCallRecord
+import com.company.callcenter.data.offline.OfflineAllCallStatus
+import com.company.callcenter.data.offline.OfflineAllTaskFilter
 import com.company.callcenter.data.offline.OfflineCleanupResult
 import com.company.callcenter.data.offline.OfflineContact
 import com.company.callcenter.data.offline.OfflineDateRanges
@@ -46,6 +48,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.coroutines.coroutineContext
+import java.util.concurrent.atomic.AtomicBoolean
 
 data class OfflineCleanupConfirmation(
     val days: Int,
@@ -108,12 +111,15 @@ data class OfflineUiState(
     val history: List<OfflineCallRecord> = emptyList(),
     val taskFilter: OfflineTaskFilter = OfflineTaskFilter.PENDING,
     val missedDateFilter: OfflineMissedDateFilter = OfflineMissedDateFilter(),
+    val allTaskFilter: OfflineAllTaskFilter = OfflineAllTaskFilter(),
     val statistics: CallStatistics = CallStatistics(),
     val statisticsRange: CallStatisticsRange = CallStatisticsRange.TODAY,
     val maximumAttempts: Int = 2,
     val hasPendingCall: Boolean = false,
     val simDial: SimDialState = SimDialState(),
     val loading: Boolean = false,
+    val loadingMessage: String = "正在处理，请稍候…",
+    val loadingProgress: Float? = null,
     val error: String? = null,
     val message: String? = null,
     val revealedPhone: String? = null,
@@ -133,16 +139,19 @@ class OfflineViewModel(
     private val transient = MutableStateFlow(OfflineUiState(simDial = simCallManager.state.value))
     private val taskFilter = MutableStateFlow(OfflineTaskFilter.PENDING)
     private val missedDateFilter = MutableStateFlow(OfflineMissedDateFilter())
+    private val allTaskFilter = MutableStateFlow(OfflineAllTaskFilter())
     private val statisticsRange = MutableStateFlow(CallStatisticsRange.TODAY)
     private val statistics = statisticsRange.flatMapLatest(repository::statistics)
     private val dialChannel = Channel<DialAuthorization>(capacity = Channel.BUFFERED)
     val dialEvents = dialChannel.receiveAsFlow()
     private var unlockCountdownJob: Job? = null
     private var importPreviewJob: Job? = null
+    private val operationInProgress = AtomicBoolean(false)
 
     private data class TaskSelection(
         val filter: OfflineTaskFilter,
         val dateFilter: OfflineMissedDateFilter,
+        val allFilter: OfflineAllTaskFilter,
     )
 
     private data class TaskData(
@@ -150,9 +159,10 @@ class OfflineViewModel(
         val page: OfflineTaskPage,
     )
 
-    private val taskSelection = combine(taskFilter, missedDateFilter, ::TaskSelection)
+    private val taskSelection = combine(taskFilter, missedDateFilter, allTaskFilter, ::TaskSelection)
     private val taskData = taskSelection.flatMapLatest { selection ->
-        repository.taskPage(selection.filter, selection.dateFilter).map { page -> TaskData(selection, page) }
+        repository.taskPage(selection.filter, selection.dateFilter, selection.allFilter)
+            .map { page -> TaskData(selection, page) }
     }
 
     private data class OfflineData(
@@ -208,6 +218,7 @@ class OfflineViewModel(
             maximumAttempts = settings.maximumAttempts,
             taskFilter = data.tasks.selection.filter,
             missedDateFilter = data.tasks.selection.dateFilter,
+            allTaskFilter = data.tasks.selection.allFilter,
             statisticsRange = options.range,
             statistics = options.statistics,
             importBatches = data.importBatches,
@@ -231,14 +242,14 @@ class OfflineViewModel(
     }
 
     fun createPassword(password: String, confirmation: String) {
-        launchBusy {
+        launchBusy(message = "正在创建离线数据密码…") {
             require(password == confirmation) { "两次输入的离线密码不一致" }
             repository.createPassword(password)
         }
     }
 
     fun unlock(password: String) {
-        launchBusy {
+        launchBusy(message = "正在解锁离线数据…") {
             val result = repository.unlock(password)
             if (!result.unlocked) {
                 transient.value = transient.value.copy(
@@ -271,7 +282,7 @@ class OfflineViewModel(
     }
 
     fun changePassword(currentPassword: String, newPassword: String, confirmation: String) {
-        launchBusy {
+        launchBusy(message = "正在修改离线密码…") {
             require(newPassword == confirmation) { "两次输入的新密码不一致" }
             check(repository.changePassword(currentPassword, newPassword)) { "当前密码不正确" }
             transient.value = transient.value.copy(message = "离线密码已修改")
@@ -279,13 +290,13 @@ class OfflineViewModel(
     }
 
     fun eraseData(password: String) {
-        launchBusy {
+        launchBusy(message = "正在安全清除离线数据…") {
             check(repository.eraseOfflineData(password)) { "密码不正确，未清除任何数据" }
         }
     }
 
     fun openSpreadsheet(uri: Uri) {
-        launchBusy {
+        launchBusy(message = "正在读取文件并生成预览…") {
             closeImportSession()
             transient.value = transient.value.copy(importState = OfflineImportUiState.Loading)
             val session = try {
@@ -387,7 +398,7 @@ class OfflineViewModel(
 
     fun confirmSpreadsheetImport() {
         val current = transient.value.importState as? OfflineImportUiState.Spreadsheet ?: return
-        launchBusy {
+        launchBusy(message = "正在导入号码…", initialProgress = 0f) {
             try {
                 val rowRange = current.selectedRange() ?: error(importRangeError(current))
                 val draft = importService.readSpreadsheet(
@@ -396,6 +407,10 @@ class OfflineViewModel(
                     phoneColumnIndex = current.phoneColumnIndex,
                     skipHeader = current.skipHeader,
                     rowRange = rowRange,
+                    estimatedLastRow = current.selectedSheet.lastRowNumber,
+                    onProgress = { progress ->
+                        updateLoading("正在读取并校验号码…", progress * IMPORT_READ_WEIGHT)
+                    },
                 )
                 val column = current.selectedSheet.columns.first { it.index == current.phoneColumnIndex }
                 val result = repository.importContacts(
@@ -412,6 +427,13 @@ class OfflineViewModel(
                         },
                         skipHeader = current.skipHeader,
                     ),
+                    onProgress = { processed, total ->
+                        val writeProgress = if (total == 0) 1f else processed.toFloat() / total
+                        updateLoading(
+                            "正在写入号码… $processed / $total",
+                            IMPORT_READ_WEIGHT + writeProgress * (1f - IMPORT_READ_WEIGHT),
+                        )
+                    },
                 )
                 transient.value = transient.value.copy(importState = OfflineImportUiState.Completed(result))
             } catch (failure: Throwable) {
@@ -424,7 +446,7 @@ class OfflineViewModel(
     }
 
     fun previewPaste(value: String) {
-        launchBusy {
+        launchBusy(message = "正在检查粘贴内容…") {
             closeImportSession()
             transient.value = transient.value.copy(
                 importState = OfflineImportUiState.PastePreview(value, importService.parsePaste(value)),
@@ -434,7 +456,7 @@ class OfflineViewModel(
 
     fun confirmPasteImport() {
         val current = transient.value.importState as? OfflineImportUiState.PastePreview ?: return
-        launchBusy {
+        launchBusy(message = "正在导入号码…", initialProgress = 0f) {
             val imported = repository.importContacts(
                 records = current.parsed.numbers.map { phone ->
                     com.company.callcenter.data.offline.OfflineImportContact(phone)
@@ -445,6 +467,12 @@ class OfflineViewModel(
                     displayName = "手动粘贴",
                     source = OfflineImportSource.PASTE,
                 ),
+                onProgress = { processed, total ->
+                    updateLoading(
+                        "正在写入号码… $processed / $total",
+                        if (total == 0) 1f else processed.toFloat() / total,
+                    )
+                },
             )
             transient.value = transient.value.copy(
                 importState = OfflineImportUiState.Completed(imported),
@@ -484,6 +512,42 @@ class OfflineViewModel(
         }
     }
 
+    fun applyAllPhoneQuery(value: String) {
+        val digits = value.filter(Char::isDigit)
+        if (digits.isNotEmpty() && digits.length !in 1..4 && digits.length != 11) {
+            transient.value = transient.value.copy(error = "号码搜索请输入完整 11 位号码，或前 3 位/后 4 位")
+            return
+        }
+        allTaskFilter.value = allTaskFilter.value.copy(phoneQuery = digits)
+    }
+
+    fun setAllCallStatus(status: OfflineAllCallStatus) {
+        allTaskFilter.value = allTaskFilter.value.copy(callStatus = status)
+    }
+
+    fun setAllImportBatch(batchId: String?) {
+        allTaskFilter.value = allTaskFilter.value.copy(importBatchId = batchId)
+    }
+
+    fun setAllCreatedDatePreset(preset: OfflineMissedDatePreset) {
+        val dateFilter = when (preset) {
+            OfflineMissedDatePreset.ALL -> OfflineMissedDateFilter()
+            OfflineMissedDatePreset.THIS_WEEK -> OfflineDateRanges.thisWeek(System.currentTimeMillis())
+            OfflineMissedDatePreset.CUSTOM -> return
+        }
+        allTaskFilter.value = allTaskFilter.value.copy(createdDateFilter = dateFilter)
+    }
+
+    fun setCustomAllCreatedDateRange(startUtcMillis: Long, endUtcMillis: Long) {
+        allTaskFilter.value = allTaskFilter.value.copy(
+            createdDateFilter = OfflineDateRanges.custom(startUtcMillis, endUtcMillis),
+        )
+    }
+
+    fun resetAllTaskFilters() {
+        allTaskFilter.value = OfflineAllTaskFilter()
+    }
+
     fun setCustomMissedDateRange(startUtcMillis: Long, endUtcMillis: Long) {
         missedDateFilter.value = OfflineDateRanges.custom(startUtcMillis, endUtcMillis)
     }
@@ -493,7 +557,7 @@ class OfflineViewModel(
     }
 
     fun setMaximumAttempts(value: Int) {
-        launchBusy { repository.setMaximumAttempts(value) }
+        launchBusy(message = "正在更新外呼次数…") { repository.setMaximumAttempts(value) }
     }
 
     fun setSimDialMode(mode: SimDialMode) {
@@ -504,11 +568,11 @@ class OfflineViewModel(
         simCallManager.refresh()
     }
 
-    fun revealPhone(contactId: String) = launchBusy {
+    fun revealPhone(contactId: String) = launchBusy(message = "正在读取完整号码…") {
         transient.value = transient.value.copy(revealedPhone = repository.revealPhone(contactId))
     }
 
-    fun revealHistoryPhone(attemptId: String) = launchBusy {
+    fun revealHistoryPhone(attemptId: String) = launchBusy(message = "正在读取完整号码…") {
         transient.value = transient.value.copy(revealedPhone = repository.revealHistoryPhone(attemptId))
     }
 
@@ -516,7 +580,7 @@ class OfflineViewModel(
         transient.value = transient.value.copy(revealedPhone = null)
     }
 
-    fun call(contactId: String) = launchBusy {
+    fun call(contactId: String) = launchBusy(message = "正在准备拨号…") {
         simCallManager.requireAvailableSim()
         dialChannel.send(repository.authorizeCall(contactId))
     }
@@ -531,7 +595,7 @@ class OfflineViewModel(
     }
 
     fun requestCleanup(days: Int) {
-        launchBusy {
+        launchBusy(message = "正在统计可清理数据…") {
             transient.value = transient.value.copy(
                 cleanupConfirmation = OfflineCleanupConfirmation(days, repository.countCompletedBefore(days)),
             )
@@ -544,7 +608,7 @@ class OfflineViewModel(
 
     fun confirmCleanup() {
         val confirmation = state.value.cleanupConfirmation ?: return
-        launchBusy {
+        launchBusy(message = "正在清理历史数据…") {
             val result: OfflineCleanupResult = repository.deleteCompletedBefore(confirmation.days)
             transient.value = transient.value.copy(
                 cleanupConfirmation = null,
@@ -554,7 +618,7 @@ class OfflineViewModel(
     }
 
     fun requestDeleteImport(batch: OfflineImportBatch) {
-        launchBusy {
+        launchBusy(message = "正在核对本次导入…") {
             transient.value = transient.value.copy(
                 importDeleteConfirmation = OfflineImportDeleteConfirmation(
                     batchId = batch.id,
@@ -571,8 +635,11 @@ class OfflineViewModel(
 
     fun confirmDeleteImport() {
         val confirmation = state.value.importDeleteConfirmation ?: return
-        launchBusy {
+        launchBusy(message = "正在删除本次导入及关联数据…") {
             val result = repository.deleteImportBatch(confirmation.batchId)
+            if (allTaskFilter.value.importBatchId == confirmation.batchId) {
+                allTaskFilter.value = allTaskFilter.value.copy(importBatchId = null)
+            }
             transient.value = transient.value.copy(
                 importDeleteConfirmation = null,
                 message = "已删除这次导入的 ${result.deletedContacts} 条现存数据及关联通话记录",
@@ -588,10 +655,18 @@ class OfflineViewModel(
         transient.value = transient.value.copy(message = null)
     }
 
-    private fun launchBusy(clearError: Boolean = true, block: suspend () -> Unit) {
+    private fun launchBusy(
+        clearError: Boolean = true,
+        message: String = "正在处理，请稍候…",
+        initialProgress: Float? = null,
+        block: suspend () -> Unit,
+    ) {
+        if (!operationInProgress.compareAndSet(false, true)) return
         viewModelScope.launch {
             transient.value = transient.value.copy(
                 loading = true,
+                loadingMessage = message,
+                loadingProgress = initialProgress,
                 error = if (clearError) null else transient.value.error,
             )
             try {
@@ -601,9 +676,18 @@ class OfflineViewModel(
             } catch (failure: Throwable) {
                 transient.value = transient.value.copy(error = failure.message ?: "操作失败，请稍后重试")
             } finally {
-                transient.value = transient.value.copy(loading = false)
+                operationInProgress.set(false)
+                transient.value = transient.value.copy(loading = false, loadingProgress = null)
             }
         }
+    }
+
+    private fun updateLoading(message: String, progress: Float?) {
+        if (!operationInProgress.get()) return
+        transient.value = transient.value.copy(
+            loadingMessage = message,
+            loadingProgress = progress?.coerceIn(0f, 1f),
+        )
     }
 
     private fun closeImportSession() {
@@ -707,6 +791,7 @@ class OfflineViewModel(
 
     private companion object {
         const val PENDING_RECONCILE_INTERVAL_MS = 5_000L
+        const val IMPORT_READ_WEIGHT = 0.55f
         const val IMPORT_PREVIEW_DEBOUNCE_MS = 250L
         const val MAX_ROW_INPUT_CHARS = 7
     }
