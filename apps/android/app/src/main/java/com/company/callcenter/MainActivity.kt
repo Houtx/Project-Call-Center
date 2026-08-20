@@ -165,7 +165,7 @@ class MainActivity : ComponentActivity() {
         }
         lifecycleScope.launch {
             appContainer.appModeStore.mode.collect { mode ->
-                if (mode == AppMode.OFFLINE) {
+                if (mode == AppMode.OFFLINE && !BuildConfig.DEBUG) {
                     window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
                 } else {
                     window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
