@@ -7,7 +7,9 @@ import androidx.lifecycle.viewModelScope
 import com.company.callcenter.data.CallStatistics
 import com.company.callcenter.data.CallStatisticsRange
 import com.company.callcenter.data.DialAuthorization
+import com.company.callcenter.data.AutoDialSettingsStore
 import com.company.callcenter.data.offline.OfflineCallRecord
+import com.company.callcenter.data.offline.OfflineCallPolicy
 import com.company.callcenter.data.offline.OfflineAllCallStatus
 import com.company.callcenter.data.offline.OfflineAllTaskFilter
 import com.company.callcenter.data.offline.OfflineCleanupResult
@@ -128,6 +130,7 @@ data class OfflineUiState(
     val importState: OfflineImportUiState = OfflineImportUiState.Idle,
     val importBatches: List<OfflineImportBatch> = emptyList(),
     val importDeleteConfirmation: OfflineImportDeleteConfirmation? = null,
+    val autoDial: AutoDialUiState = AutoDialUiState(),
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -135,6 +138,7 @@ class OfflineViewModel(
     private val repository: OfflineRepository,
     private val simCallManager: SimCallManager,
     private val importService: OfflineImportService,
+    private val autoDialSettings: AutoDialSettingsStore,
 ) : ViewModel() {
     private val transient = MutableStateFlow(OfflineUiState(simDial = simCallManager.state.value))
     private val taskFilter = MutableStateFlow(OfflineTaskFilter.PENDING)
@@ -147,6 +151,17 @@ class OfflineViewModel(
     private var unlockCountdownJob: Job? = null
     private var importPreviewJob: Job? = null
     private val operationInProgress = AtomicBoolean(false)
+    @Volatile private var latestTaskContacts: List<OfflineContact> = emptyList()
+    @Volatile private var latestHasPendingCall = false
+    private val autoDialController = AutoDialController(
+        scope = viewModelScope,
+        delaySeconds = autoDialSettings.delaySeconds,
+        unavailableReason = ::autoDialUnavailableReason,
+        dialNext = ::authorizeNextAutomaticCall,
+        onFailure = { failure ->
+            transient.value = transient.value.copy(error = failure.message ?: "自动拨号失败，请稍后重试")
+        },
+    )
 
     private data class TaskSelection(
         val filter: OfflineTaskFilter,
@@ -196,11 +211,10 @@ class OfflineViewModel(
     private data class ViewOptions(
         val range: CallStatisticsRange,
         val statistics: CallStatistics,
+        val autoDial: AutoDialUiState,
     )
 
-    private val options = combine(statisticsRange, statistics) { range, stats ->
-        ViewOptions(range, stats)
-    }
+    private val options = combine(statisticsRange, statistics, autoDialController.state, ::ViewOptions)
 
     val state: StateFlow<OfflineUiState> = combine(
         transient,
@@ -222,6 +236,7 @@ class OfflineViewModel(
             statisticsRange = options.range,
             statistics = options.statistics,
             importBatches = data.importBatches,
+            autoDial = options.autoDial,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), transient.value)
 
@@ -229,6 +244,21 @@ class OfflineViewModel(
         viewModelScope.launch {
             simCallManager.state.collect { simDial ->
                 transient.value = transient.value.copy(simDial = simDial)
+                autoDialController.onDataChanged()
+            }
+        }
+        viewModelScope.launch {
+            combine(taskData, repository.hasPendingCall) { tasks, pending ->
+                tasks.page.contacts to pending
+            }.collect { (contacts, pending) ->
+                latestTaskContacts = contacts
+                latestHasPendingCall = pending
+                autoDialController.onDataChanged()
+            }
+        }
+        viewModelScope.launch {
+            repository.unlocked.collect { unlocked ->
+                if (!unlocked) autoDialController.stop("离线数据已锁定，自动拨号已关闭")
             }
         }
         viewModelScope.launch {
@@ -271,6 +301,7 @@ class OfflineViewModel(
     }
 
     fun lock() {
+        autoDialController.stop("离线数据已锁定，自动拨号已关闭")
         unlockCountdownJob?.cancel()
         closeImportSession()
         repository.lock()
@@ -491,7 +522,12 @@ class OfflineViewModel(
         viewModelScope.launch {
             simCallManager.refresh()
             runCatching { repository.reconcilePending() }
+                .onSuccess { autoDialController.onForegroundReconciled() }
         }
+    }
+
+    fun onMovedToBackground() {
+        autoDialController.setHostForeground(false)
     }
 
     private suspend fun refreshData() {
@@ -585,7 +621,20 @@ class OfflineViewModel(
         dialChannel.send(repository.authorizeCall(contactId))
     }
 
+    fun setAutoDialEnabled(enabled: Boolean) {
+        autoDialController.setEnabled(enabled)
+    }
+
+    fun setAutoDialTaskScreenVisible(visible: Boolean) {
+        autoDialController.setTaskScreenVisible(visible)
+    }
+
+    fun setAutoDialDelaySeconds(value: Int) {
+        autoDialSettings.setDelaySeconds(value)
+    }
+
     fun reportDialLaunchFailure(attemptId: String, failure: Throwable) {
+        autoDialController.onDialLaunchFailed(failure)
         viewModelScope.launch {
             repository.cancelFailedCallAttempt(attemptId)
             transient.value = transient.value.copy(
@@ -678,6 +727,7 @@ class OfflineViewModel(
             } finally {
                 operationInProgress.set(false)
                 transient.value = transient.value.copy(loading = false, loadingProgress = null)
+                autoDialController.onDataChanged()
             }
         }
     }
@@ -688,6 +738,32 @@ class OfflineViewModel(
             loadingMessage = message,
             loadingProgress = progress?.coerceIn(0f, 1f),
         )
+    }
+
+    private fun autoDialUnavailableReason(): String? {
+        return when {
+            !repository.unlocked.value -> "离线数据已锁定"
+            operationInProgress.get() -> "正在处理其他操作，自动拨号已暂停"
+            latestHasPendingCall -> "正在等待上一通结束并采集结果"
+            simCallManager.state.value.availableSims.isEmpty() -> "未检测到可拨号的 SIM 卡"
+            latestTaskContacts.none { contact ->
+                OfflineCallPolicy.canCall(contact.state, contact.attemptCount, repository.maximumAttempts.value)
+            } -> "当前筛选中暂无可外呼任务"
+            else -> null
+        }
+    }
+
+    private suspend fun authorizeNextAutomaticCall() {
+        check(repository.unlocked.value) { "离线数据已锁定" }
+        val next = latestTaskContacts.firstOrNull { contact ->
+            OfflineCallPolicy.canCall(
+                contact.state,
+                contact.attemptCount,
+                repository.maximumAttempts.value,
+            )
+        } ?: error("当前筛选中暂无可外呼任务")
+        simCallManager.requireAvailableSim()
+        dialChannel.send(repository.authorizeCall(next.id))
     }
 
     private fun closeImportSession() {
@@ -801,8 +877,9 @@ class OfflineViewModelFactory(
     private val repository: OfflineRepository,
     private val simCallManager: SimCallManager,
     private val importService: OfflineImportService,
+    private val autoDialSettings: AutoDialSettingsStore,
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T =
-        OfflineViewModel(repository, simCallManager, importService) as T
+        OfflineViewModel(repository, simCallManager, importService, autoDialSettings) as T
 }

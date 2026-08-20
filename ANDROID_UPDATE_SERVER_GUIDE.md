@@ -20,8 +20,8 @@
 /opt/project-call-center-update/public/
 ├── release.json
 └── releases/
-    └── v0.6.6/
-        └── project-call-center-agent-v0.6.6.apk
+    └── v0.6.7/
+        └── project-call-center-agent-v0.6.7.apk
 ```
 
 - `release.json` 禁止缓存，发布时最后原子替换。

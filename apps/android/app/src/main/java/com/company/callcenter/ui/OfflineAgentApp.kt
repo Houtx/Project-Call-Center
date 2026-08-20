@@ -64,6 +64,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -242,6 +243,12 @@ private fun OfflineMainScreen(
     var tab by remember { mutableIntStateOf(0) }
     val snackbars = remember { SnackbarHostState() }
     var showPasswordDialog by remember { mutableStateOf(false) }
+    LaunchedEffect(tab) {
+        viewModel.setAutoDialTaskScreenVisible(tab == 0)
+    }
+    DisposableEffect(viewModel) {
+        onDispose { viewModel.setAutoDialTaskScreenVisible(false) }
+    }
 
     LaunchedEffect(state.error, state.message) {
         (state.error ?: state.message)?.let {
@@ -306,7 +313,10 @@ private fun OfflineMainScreen(
                 title = { Text(titles[tab]) },
                 actions = {
                     if (tab == 0) {
-                        IconButton(onClick = viewModel::refresh, enabled = !state.loading) {
+                        IconButton(
+                            onClick = viewModel::refresh,
+                            enabled = !state.loading && !state.autoDial.enabled,
+                        ) {
                             Icon(Icons.Outlined.Refresh, contentDescription = "刷新")
                         }
                     }
@@ -362,6 +372,7 @@ private fun OfflineMainScreen(
                     requestPermissions = requestPermissions,
                     onSimModeChange = viewModel::setSimDialMode,
                     onMaximumAttemptsChange = viewModel::setMaximumAttempts,
+                    onAutoDialDelayChange = viewModel::setAutoDialDelaySeconds,
                     onCleanup = viewModel::requestCleanup,
                     onChangePassword = { showPasswordDialog = true },
                     onLock = viewModel::lock,
@@ -493,6 +504,13 @@ private fun OfflineTaskList(
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item {
+            AutoDialBanner(
+                state = state.autoDial,
+                canEnable = permissionsGranted && state.simDial.availableSims.isNotEmpty() && !state.loading,
+                onEnabledChange = viewModel::setAutoDialEnabled,
+            )
+        }
+        item {
             val label = when (state.taskFilter) {
                 OfflineTaskFilter.PENDING -> "待呼"
                 OfflineTaskFilter.NOT_CONNECTED -> "未接通"
@@ -583,7 +601,9 @@ private fun OfflineTaskList(
             OfflineContactCard(
                 contact = contact,
                 maximumAttempts = state.maximumAttempts,
-                callEnabled = !state.loading && permissionsGranted && state.simDial.availableSims.isNotEmpty() &&
+                interactionEnabled = !state.autoDial.enabled,
+                callEnabled = !state.autoDial.enabled && !state.loading && permissionsGranted &&
+                    state.simDial.availableSims.isNotEmpty() &&
                     !state.hasPendingCall && contact.state != OfflineContactState.CONNECTED &&
                     contact.state != OfflineContactState.COLLECTING && contact.attemptCount < state.maximumAttempts,
                 onReveal = { viewModel.revealPhone(contact.id) },
@@ -731,6 +751,7 @@ private fun SelectedDateRange(
 private fun OfflineContactCard(
     contact: OfflineContact,
     maximumAttempts: Int,
+    interactionEnabled: Boolean,
     callEnabled: Boolean,
     onReveal: () -> Unit,
     onCall: () -> Unit,
@@ -751,7 +772,11 @@ private fun OfflineContactCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedButton(onClick = onReveal, modifier = Modifier.weight(1f)) {
+                OutlinedButton(
+                    onClick = onReveal,
+                    enabled = interactionEnabled,
+                    modifier = Modifier.weight(1f),
+                ) {
                     Icon(Icons.Outlined.Visibility, contentDescription = null)
                     Text("查看", modifier = Modifier.padding(start = 6.dp))
                 }
@@ -804,6 +829,7 @@ private fun OfflineAccountScreen(
     requestPermissions: () -> Unit,
     onSimModeChange: (com.company.callcenter.telephony.SimDialMode) -> Unit,
     onMaximumAttemptsChange: (Int) -> Unit,
+    onAutoDialDelayChange: (Int) -> Unit,
     onCleanup: (Int) -> Unit,
     onChangePassword: () -> Unit,
     onLock: () -> Unit,
@@ -834,6 +860,13 @@ private fun OfflineAccountScreen(
             else OutlinedButton(onClick = requestPermissions) { Text("重新授权外呼权限") }
         }
         SettingsSection("SIM 拨号") { SimDialSettings(state.simDial, onSimModeChange) }
+        SettingsSection("自动拨号") {
+            AutoDialDelaySetting(
+                delaySeconds = state.autoDial.delaySeconds,
+                enabled = !state.loading,
+                onDelayChange = onAutoDialDelayChange,
+            )
+        }
         SettingsSection("外呼限制") {
             Text("单个号码最大外呼次数", fontWeight = FontWeight.Medium)
             Text("用于防止误操作造成反复呼叫。未接通任务仍可按日期筛选。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

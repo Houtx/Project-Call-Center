@@ -3,7 +3,7 @@
 Project Call Center is a single-company SIM calling CRM with two user surfaces:
 
 - Administrators use the React web application to maintain customers, allocate work, manage agents and inspect call statistics.
-- Agents use the Android application to synchronize assigned customers and explicitly start calls through the system dialer.
+- Agents use the Android application to synchronize assigned customers and start calls through the system dialer, either one at a time or through an explicitly enabled, visible, cancellable auto-dial countdown.
 
 ## Trust boundaries
 

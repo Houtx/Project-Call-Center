@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.company.callcenter.data.AppMode
 import com.company.callcenter.data.AppModeStore
+import com.company.callcenter.data.AutoDialSettingsStore
 import com.company.callcenter.data.CallCenterRepository
 import com.company.callcenter.data.CallStatistics
 import com.company.callcenter.data.CallStatisticsRange
@@ -49,6 +50,7 @@ data class AgentUiState(
     val serverConnection: ServerConnectionState = ServerConnectionState(
         status = ServerConnectionStatus.NOT_CONFIGURED,
     ),
+    val autoDial: AutoDialUiState = AutoDialUiState(),
 )
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
@@ -56,6 +58,7 @@ class AgentViewModel(
     private val repository: CallCenterRepository,
     private val simCallManager: SimCallManager,
     private val appModeStore: AppModeStore,
+    private val autoDialSettings: AutoDialSettingsStore,
 ) : ViewModel() {
     private val transient = MutableStateFlow(
         AgentUiState(
@@ -69,17 +72,38 @@ class AgentViewModel(
     val dialEvents = dialChannel.receiveAsFlow()
     private val statisticsRange = MutableStateFlow(CallStatisticsRange.TODAY)
     private val operationInProgress = AtomicBoolean(false)
+    @Volatile private var latestAssignments: List<AssignedCustomerEntity> = emptyList()
+    @Volatile private var latestHasPendingCall = false
+    @Volatile private var latestMaxCallAttempts = 2
+    private val autoDialController = AutoDialController(
+        scope = viewModelScope,
+        delaySeconds = autoDialSettings.delaySeconds,
+        unavailableReason = ::autoDialUnavailableReason,
+        dialNext = ::authorizeNextAutomaticCall,
+        onFailure = { failure ->
+            transient.value = transient.value.copy(error = failure.message ?: "自动拨号失败，请稍后重试")
+        },
+    )
     private val statistics = statisticsRange.flatMapLatest(repository::statistics)
     private val assignmentsWithPolicy = combine(
         repository.assignments,
         repository.maxCallAttempts,
     ) { assignments, maxCallAttempts -> assignments to maxCallAttempts }
 
+    private data class ActivityData(
+        val history: List<CallHistoryEntity>,
+        val pending: Boolean,
+        val statistics: CallStatistics,
+        val autoDial: AutoDialUiState,
+    )
+
     private val activityData = combine(
         repository.history,
         repository.hasPendingCall,
         statistics,
-    ) { history, pending, stats -> Triple(history, pending, stats) }
+        autoDialController.state,
+        ::ActivityData,
+    )
 
     val state: StateFlow<AgentUiState> = combine(
         transient,
@@ -96,10 +120,11 @@ class AgentViewModel(
             serverConnection = serverConnection,
             assignments = assignmentPolicy.first,
             maxCallAttempts = assignmentPolicy.second,
-            history = activity.first,
-            hasPendingCall = activity.second,
-            statistics = activity.third,
+            history = activity.history,
+            hasPendingCall = activity.pending,
+            statistics = activity.statistics,
             statisticsRange = statisticsRange.value,
+            autoDial = activity.autoDial,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), transient.value)
 
@@ -107,10 +132,27 @@ class AgentViewModel(
         viewModelScope.launch {
             simCallManager.state.collectLatest { simDial ->
                 transient.value = transient.value.copy(simDial = simDial)
+                autoDialController.onDataChanged()
+            }
+        }
+        viewModelScope.launch {
+            combine(
+                repository.assignments,
+                repository.hasPendingCall,
+                repository.maxCallAttempts,
+            ) { assignments, pending, maximumAttempts -> Triple(assignments, pending, maximumAttempts) }
+                .collect { (assignments, pending, maximumAttempts) ->
+                latestAssignments = assignments
+                latestHasPendingCall = pending
+                latestMaxCallAttempts = maximumAttempts
+                autoDialController.onDataChanged()
             }
         }
         viewModelScope.launch {
             appModeStore.mode.collectLatest { mode ->
+                if (mode != AppMode.ONLINE) {
+                    autoDialController.stop("已切换模式，自动拨号已关闭")
+                }
                 if (mode != AppMode.ONLINE ||
                     repository.serverConnection.value.status == ServerConnectionStatus.NOT_CONFIGURED
                 ) {
@@ -215,6 +257,7 @@ class AgentViewModel(
                 repository.reconcilePending()
                 checkOnlineMode()
                 repository.sync()
+                autoDialController.onForegroundReconciled()
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Throwable) {
@@ -244,6 +287,22 @@ class AgentViewModel(
         dialChannel.send(authorization)
     }
 
+    fun setAutoDialEnabled(enabled: Boolean) {
+        autoDialController.setEnabled(enabled)
+    }
+
+    fun setAutoDialTaskScreenVisible(visible: Boolean) {
+        autoDialController.setTaskScreenVisible(visible)
+    }
+
+    fun onMovedToBackground() {
+        autoDialController.setHostForeground(false)
+    }
+
+    fun setAutoDialDelaySeconds(value: Int) {
+        autoDialSettings.setDelaySeconds(value)
+    }
+
     fun setSimDialMode(mode: SimDialMode) {
         simCallManager.setMode(mode)
     }
@@ -257,6 +316,7 @@ class AgentViewModel(
     }
 
     fun reportDialLaunchFailure(attemptId: String, failure: Throwable) {
+        autoDialController.onDialLaunchFailed(failure)
         viewModelScope.launch {
             val cancelled = runCatching { repository.cancelFailedCallAttempt(attemptId) }
             transient.value = transient.value.copy(
@@ -274,6 +334,7 @@ class AgentViewModel(
             transient.value = transient.value.copy(error = "通话记录仍在采集中，完成采集后才能退出")
             return
         }
+        autoDialController.stop("已退出登录，自动拨号已关闭")
         viewModelScope.launch {
             repository.logout()
             transient.value = AgentUiState(
@@ -287,6 +348,7 @@ class AgentViewModel(
             transient.value = transient.value.copy(error = "通话记录仍在采集中，完成采集后才能切换服务器")
             return
         }
+        autoDialController.stop("正在切换服务器，自动拨号已关闭")
         viewModelScope.launch {
             repository.logout()
             transient.value = AgentUiState(
@@ -312,12 +374,40 @@ class AgentViewModel(
             } finally {
                 operationInProgress.set(false)
                 transient.value = transient.value.copy(loading = false)
+                autoDialController.onDataChanged()
             }
         }
     }
 
     private fun checkOnlineMode() {
         check(appModeStore.mode.value == AppMode.ONLINE) { "当前不是在线模式" }
+    }
+
+    private fun autoDialUnavailableReason(): String? {
+        val now = System.currentTimeMillis()
+        return when {
+            appModeStore.mode.value != AppMode.ONLINE -> "当前不是在线模式"
+            !repository.isLoggedIn -> "登录已失效，自动拨号已暂停"
+            operationInProgress.get() -> "正在处理其他操作，自动拨号已暂停"
+            latestHasPendingCall -> "正在等待上一通结束并采集结果"
+            simCallManager.state.value.availableSims.isEmpty() -> "未检测到可拨号的 SIM 卡"
+            latestAssignments.none { assignment ->
+                assignment.attemptCount < latestMaxCallAttempts &&
+                    (assignment.nextCallAllowedAt == null || assignment.nextCallAllowedAt <= now)
+            } -> "暂无当前可外呼的任务"
+            else -> null
+        }
+    }
+
+    private suspend fun authorizeNextAutomaticCall() {
+        checkOnlineMode()
+        val now = System.currentTimeMillis()
+        val next = latestAssignments.firstOrNull { assignment ->
+            assignment.attemptCount < latestMaxCallAttempts &&
+                (assignment.nextCallAllowedAt == null || assignment.nextCallAllowedAt <= now)
+        } ?: error("暂无当前可外呼的任务")
+        simCallManager.requireAvailableSim()
+        dialChannel.send(repository.authorizeCall(next.assignmentId))
     }
 
     private companion object {
@@ -329,8 +419,9 @@ class AgentViewModelFactory(
     private val repository: CallCenterRepository,
     private val simCallManager: SimCallManager,
     private val appModeStore: AppModeStore,
+    private val autoDialSettings: AutoDialSettingsStore,
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T =
-        AgentViewModel(repository, simCallManager, appModeStore) as T
+        AgentViewModel(repository, simCallManager, appModeStore, autoDialSettings) as T
 }

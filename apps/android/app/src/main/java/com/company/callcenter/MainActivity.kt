@@ -47,13 +47,19 @@ class MainActivity : ComponentActivity() {
     private val updateManager by lazy { AppUpdateManager(applicationContext) }
     private val appContainer by lazy { (application as CallCenterApplication).container }
     private val viewModel: AgentViewModel by viewModels {
-        AgentViewModelFactory(appContainer.repository, appContainer.simCallManager, appContainer.appModeStore)
+        AgentViewModelFactory(
+            appContainer.repository,
+            appContainer.simCallManager,
+            appContainer.appModeStore,
+            appContainer.autoDialSettings,
+        )
     }
     private val offlineViewModel: OfflineViewModel by viewModels {
         OfflineViewModelFactory(
             appContainer.offlineRepository,
             appContainer.simCallManager,
             appContainer.offlineImportService,
+            appContainer.autoDialSettings,
         )
     }
     private var updateJob: Job? = null
@@ -189,6 +195,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        viewModel.onMovedToBackground()
+        offlineViewModel.onMovedToBackground()
         if (appContainer.appModeStore.mode.value == AppMode.OFFLINE) {
             appContainer.offlineRepository.markBackgrounded()
             backgroundLockJob?.cancel()
@@ -309,6 +317,11 @@ class MainActivity : ComponentActivity() {
         }
         startDialCollector()
         updateState.value = StartupUpdateState.Ready
+        when (appContainer.appModeStore.mode.value) {
+            AppMode.ONLINE -> viewModel.onReturnedToForeground()
+            AppMode.OFFLINE -> offlineViewModel.onReturnedToForeground()
+            null -> Unit
+        }
     }
 
     private fun startDialCollector() {

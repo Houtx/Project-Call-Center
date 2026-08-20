@@ -76,7 +76,7 @@ fun OfflineImportScreen(
     onReset: () -> Unit,
     onDeleteImport: (OfflineImportBatch) -> Unit,
 ) {
-    var mode by remember(state) {
+    var mode by remember {
         mutableIntStateOf(if (state is OfflineImportUiState.PastePreview) 1 else 0)
     }
     var pasteText by remember(state) {
@@ -85,6 +85,7 @@ fun OfflineImportScreen(
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let(onOpenSpreadsheet)
     }
+    val modeLocked = state !is OfflineImportUiState.Idle
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
@@ -95,9 +96,24 @@ fun OfflineImportScreen(
                 SegmentedButton(
                     selected = mode == index,
                     onClick = { mode = index },
+                    enabled = !modeLocked,
                     shape = SegmentedButtonDefaults.itemShape(index, 2),
                 ) { Text(label) }
             }
+        }
+        if (modeLocked) {
+            Text(
+                when (state) {
+                    is OfflineImportUiState.Spreadsheet,
+                    OfflineImportUiState.Loading -> "正在处理已选择的表格；请先点击下方“重新选择”，再切换导入方式。"
+                    is OfflineImportUiState.PastePreview ->
+                        "正在预览粘贴内容；请先点击下方“重新选择”，再切换导入方式。"
+                    is OfflineImportUiState.Completed -> "本次导入已完成；点击“继续导入”后可重新选择导入方式。"
+                    OfflineImportUiState.Idle -> ""
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
 
         when (val importState = state) {
@@ -134,12 +150,17 @@ fun OfflineImportScreen(
                     invalid = importState.parsed.invalidCount + importState.parsed.blankCount,
                     duplicates = importState.parsed.duplicateCount,
                 )
-                Button(
-                    onClick = onConfirmPaste,
-                    enabled = pasteText == importState.source && importState.parsed.validCount > 0,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text("导入 ${importState.parsed.validCount} 个有效号码")
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedButton(onClick = onReset, modifier = Modifier.weight(1f)) {
+                        Text("重新选择")
+                    }
+                    Button(
+                        onClick = onConfirmPaste,
+                        enabled = pasteText == importState.source && importState.parsed.validCount > 0,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("导入 ${importState.parsed.validCount} 个")
+                    }
                 }
             }
             is OfflineImportUiState.Completed -> {

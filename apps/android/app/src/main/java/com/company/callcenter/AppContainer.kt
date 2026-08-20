@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.Room
 import com.company.callcenter.data.CallCenterRepository
 import com.company.callcenter.data.AppModeStore
+import com.company.callcenter.data.AutoDialSettingsStore
 import com.company.callcenter.data.SessionStore
 import com.company.callcenter.data.local.CallCenterDatabase
 import com.company.callcenter.data.offline.OfflineAccessStore
@@ -44,6 +45,7 @@ class AppContainer(context: Context) {
         appContext,
         legacyDefault = if (session.configuredServerUrl != null) com.company.callcenter.data.AppMode.ONLINE else null,
     )
+    val autoDialSettings = AutoDialSettingsStore(appContext)
     val simCallManager = SimCallManager(appContext)
     val callRecorder = CallRecorder(appContext)
     val usageTelemetry = UsageTelemetry(appContext)

@@ -54,6 +54,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -216,6 +217,12 @@ private fun MainScreen(
 ) {
     var tab by remember { mutableIntStateOf(0) }
     val snackbars = remember { SnackbarHostState() }
+    LaunchedEffect(tab) {
+        viewModel.setAutoDialTaskScreenVisible(tab == 0)
+    }
+    DisposableEffect(viewModel) {
+        onDispose { viewModel.setAutoDialTaskScreenVisible(false) }
+    }
     LaunchedEffect(state.error) {
         state.error?.let {
             snackbars.showSnackbar(it)
@@ -239,7 +246,10 @@ private fun MainScreen(
                 title = { Text(listOf("待呼任务", "通话记录", "外呼统计", "我的")[tab]) },
                 actions = {
                     if (tab == 0) {
-                        IconButton(onClick = viewModel::refresh, enabled = !state.loading) {
+                        IconButton(
+                            onClick = viewModel::refresh,
+                            enabled = !state.loading && !state.autoDial.enabled,
+                        ) {
                             Icon(Icons.Outlined.Refresh, contentDescription = "刷新")
                         }
                     }
@@ -276,6 +286,7 @@ private fun MainScreen(
                     viewModel::logout,
                     viewModel::changeServer,
                     viewModel::setSimDialMode,
+                    viewModel::setAutoDialDelaySeconds,
                     telemetryAvailable,
                     telemetryEnabled,
                     onTelemetryEnabledChange,
@@ -298,6 +309,13 @@ private fun TaskList(
         modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
+        item {
+            AutoDialBanner(
+                state = state.autoDial,
+                canEnable = permissionsGranted && state.simDial.availableSims.isNotEmpty() && !state.loading,
+                onEnabledChange = viewModel::setAutoDialEnabled,
+            )
+        }
         if (!permissionsGranted) {
             item {
                 PermissionBanner(requestPermissions)
@@ -314,7 +332,8 @@ private fun TaskList(
             TaskCard(
                 assignment = assignment,
                 maxCallAttempts = state.maxCallAttempts,
-                callEnabled = permissionsGranted && state.simDial.availableSims.isNotEmpty() &&
+                interactionEnabled = !state.autoDial.enabled,
+                callEnabled = !state.autoDial.enabled && permissionsGranted && state.simDial.availableSims.isNotEmpty() &&
                     !state.hasPendingCall,
                 onReveal = { viewModel.revealPhone(assignment.assignmentId) },
                 onCall = { viewModel.call(assignment.assignmentId) },
@@ -361,6 +380,7 @@ private fun PermissionBanner(onGrant: () -> Unit) {
 private fun TaskCard(
     assignment: AssignedCustomerEntity,
     maxCallAttempts: Int,
+    interactionEnabled: Boolean,
     callEnabled: Boolean,
     onReveal: () -> Unit,
     onCall: () -> Unit,
@@ -382,7 +402,12 @@ private fun TaskCard(
             assignment.batchName?.let { Text("批次：$it", style = MaterialTheme.typography.bodySmall) }
             HorizontalDivider()
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedButton(onClick = onReveal, modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp)) {
+                OutlinedButton(
+                    onClick = onReveal,
+                    enabled = interactionEnabled,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(8.dp),
+                ) {
                     Icon(Icons.Outlined.Visibility, null)
                     Text("查看号码", modifier = Modifier.padding(start = 6.dp))
                 }
@@ -436,6 +461,7 @@ private fun AccountScreen(
     onLogout: () -> Unit,
     onChangeServer: () -> Unit,
     onSimModeChange: (SimDialMode) -> Unit,
+    onAutoDialDelayChange: (Int) -> Unit,
     telemetryAvailable: Boolean,
     telemetryEnabled: Boolean,
     onTelemetryEnabledChange: (Boolean) -> Unit,
@@ -461,6 +487,13 @@ private fun AccountScreen(
             }
         }
         SettingsSection("SIM 拨号") { SimDialSettings(state.simDial, onSimModeChange) }
+        SettingsSection("自动拨号") {
+            AutoDialDelaySetting(
+                delaySeconds = state.autoDial.delaySeconds,
+                enabled = !state.loading,
+                onDelayChange = onAutoDialDelayChange,
+            )
+        }
         if (telemetryAvailable) {
             SettingsSection("使用统计") { UsageTelemetrySetting(telemetryEnabled, onTelemetryEnabledChange) }
         }
