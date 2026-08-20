@@ -28,8 +28,7 @@ class AppUpdateManager(
         currentVersionCode: Long = BuildConfig.VERSION_CODE.toLong(),
     ): UpdateCheckResult {
         val release = manifestClient.fetch()
-        val cached = updateCheckStore.recordSuccessfulCheck(release.versionCode)
-        val highestRequiredVersion = cached.highestSeenVersionCode
+        val highestRequiredVersion = updateCheckStore.recordSuccessfulCheck(release.versionCode)
         return if (UpdatePolicy.requiresUpdate(currentVersionCode, release.versionCode)) {
             UpdateCheckResult.UpdateRequired(release)
         } else if (currentVersionCode < highestRequiredVersion) {
@@ -41,17 +40,6 @@ class AppUpdateManager(
             UpdateCheckResult.UpToDate
         }
     }
-
-    fun canUseCachedPolicy(
-        failure: Throwable,
-        currentVersionCode: Long = BuildConfig.VERSION_CODE.toLong(),
-        nowEpochMillis: Long = System.currentTimeMillis(),
-    ): Boolean = CachedUpdatePolicy.canUseCachedPolicy(
-        cached = updateCheckStore.read(),
-        failureReason = (failure as? AppUpdateException)?.reason,
-        currentVersionCode = currentVersionCode,
-        nowEpochMillis = nowEpochMillis,
-    )
 
     suspend fun downloadAndVerify(
         release: AppRelease,

@@ -218,8 +218,8 @@ class MainActivity : ComponentActivity() {
             unlockApplication()
             return
         }
+        updateState.value = StartupUpdateState.Checking
         updateJob = lifecycleScope.launch {
-            updateState.value = StartupUpdateState.Checking
             try {
                 when (val result = updateManager.checkForUpdate()) {
                     UpdateCheckResult.UpToDate -> unlockApplication()
@@ -228,16 +228,7 @@ class MainActivity : ComponentActivity() {
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Throwable) {
-                if (updateManager.canUseCachedPolicy(failure)) {
-                    Toast.makeText(
-                        this@MainActivity,
-                        "更新服务暂时不可达，已使用 72 小时内的版本校验结果",
-                        Toast.LENGTH_LONG,
-                    ).show()
-                    unlockApplication()
-                } else {
-                    updateState.value = StartupUpdateState.Failed(failure.toUpdateMessage())
-                }
+                updateState.value = StartupUpdateState.Failed(failure.toUpdateMessage())
             }
         }
     }

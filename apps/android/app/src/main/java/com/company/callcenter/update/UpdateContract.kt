@@ -53,4 +53,10 @@ object UpdatePolicy {
         require(releaseVersionCode > 0) { "Release version code must be positive" }
         return releaseVersionCode > currentVersionCode
     }
+
+    fun highestSeenVersion(previousVersionCode: Long, releaseVersionCode: Long): Long {
+        require(previousVersionCode >= 0) { "Previous version code must not be negative" }
+        require(releaseVersionCode > 0) { "Release version code must be positive" }
+        return maxOf(previousVersionCode, releaseVersionCode)
+    }
 }

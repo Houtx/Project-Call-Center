@@ -54,6 +54,12 @@ class UpdateManifestParserTest {
     }
 
     @Test
+    fun `successful checks never lower the highest seen version`() {
+        assertEquals(8L, UpdatePolicy.highestSeenVersion(previousVersionCode = 8, releaseVersionCode = 7))
+        assertEquals(9L, UpdatePolicy.highestSeenVersion(previousVersionCode = 8, releaseVersionCode = 9))
+    }
+
+    @Test
     fun `disables update checks only for debug builds without a manifest`() {
         assertTrue(UpdatePolicy.isCheckDisabled(debug = true, manifestUrl = ""))
         assertFalse(UpdatePolicy.isCheckDisabled(debug = false, manifestUrl = ""))
