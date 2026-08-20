@@ -85,6 +85,7 @@ fun AgentApp(
     telemetryAvailable: Boolean,
     telemetryEnabled: Boolean,
     onTelemetryEnabledChange: (Boolean) -> Unit,
+    onCheckForUpdate: () -> Unit,
     onUseOffline: () -> Unit,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -100,6 +101,7 @@ fun AgentApp(
                 telemetryEnabled = telemetryEnabled,
                 onTelemetryEnabledChange = onTelemetryEnabledChange,
                 viewModel = viewModel,
+                onCheckForUpdate = onCheckForUpdate,
                 onUseOffline = onUseOffline,
             )
         }
@@ -209,6 +211,7 @@ private fun MainScreen(
     telemetryEnabled: Boolean,
     onTelemetryEnabledChange: (Boolean) -> Unit,
     viewModel: AgentViewModel,
+    onCheckForUpdate: () -> Unit,
     onUseOffline: () -> Unit,
 ) {
     var tab by remember { mutableIntStateOf(0) }
@@ -276,6 +279,7 @@ private fun MainScreen(
                     telemetryAvailable,
                     telemetryEnabled,
                     onTelemetryEnabledChange,
+                    onCheckForUpdate,
                     onUseOffline,
                 )
             }
@@ -435,47 +439,53 @@ private fun AccountScreen(
     telemetryAvailable: Boolean,
     telemetryEnabled: Boolean,
     onTelemetryEnabledChange: (Boolean) -> Unit,
+    onCheckForUpdate: () -> Unit,
     onUseOffline: () -> Unit,
 ) {
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text(state.displayName, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(if (permissionsGranted) Icons.Outlined.CheckCircle else Icons.Outlined.ErrorOutline, null)
-            Text(
-                if (permissionsGranted) "拨号与通话记录权限正常" else "外呼权限未就绪",
-                modifier = Modifier.padding(start = 10.dp),
-            )
+        SettingsSection("账号") {
+            Text(state.displayName, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            Text("待呼客户 ${state.assignments.size} 个 · 本机记录 ${state.history.size} 条", style = MaterialTheme.typography.bodySmall)
         }
-        if (!permissionsGranted) FilledTonalButton(onClick = requestPermissions) {
-            Icon(Icons.Outlined.LockOpen, null)
-            Text("重新授权", modifier = Modifier.padding(start = 6.dp))
+        SettingsSection("外呼权限与设备") {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(if (permissionsGranted) Icons.Outlined.CheckCircle else Icons.Outlined.ErrorOutline, null)
+                Text(if (permissionsGranted) "拨号与通话记录权限正常" else "外呼权限未就绪", modifier = Modifier.padding(start = 10.dp))
+            }
+            if (!permissionsGranted) FilledTonalButton(onClick = requestPermissions) {
+                Icon(Icons.Outlined.LockOpen, null)
+                Text("重新授权", modifier = Modifier.padding(start = 6.dp))
+            }
         }
-        SimDialSettings(state.simDial, onSimModeChange)
-        Text("待呼客户 ${state.assignments.size} 个")
-        Text("本机记录 ${state.history.size} 条")
-        Text(
-            "服务器：${state.serverConnection.configuredUrl ?: state.serverConnection.suggestedUrl ?: "未配置"}",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        SettingsSection("SIM 拨号") { SimDialSettings(state.simDial, onSimModeChange) }
         if (telemetryAvailable) {
-            UsageTelemetrySetting(telemetryEnabled, onTelemetryEnabledChange)
+            SettingsSection("使用统计") { UsageTelemetrySetting(telemetryEnabled, onTelemetryEnabledChange) }
         }
-        Spacer(Modifier.height(8.dp))
-        OutlinedButton(onClick = onChangeServer, modifier = Modifier.fillMaxWidth()) {
-            Text("切换服务器")
+        SettingsSection("服务器与登录") {
+            Text(
+                "服务器：${state.serverConnection.configuredUrl ?: state.serverConnection.suggestedUrl ?: "未配置"}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedButton(onClick = onChangeServer, modifier = Modifier.fillMaxWidth()) { Text("切换服务器") }
+            OutlinedButton(onClick = onLogout, modifier = Modifier.fillMaxWidth()) { Text("退出登录") }
+            OutlinedButton(
+                onClick = onUseOffline,
+                enabled = !state.hasPendingCall && !state.loading,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("切换到离线模式") }
         }
-        OutlinedButton(
-            onClick = onUseOffline,
-            enabled = !state.hasPendingCall && !state.loading,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text("切换到离线模式")
+        SettingsSection("关于与更新") {
+            Text("APP 版本 ${BuildConfig.VERSION_NAME}")
+            Text("构建号 ${BuildConfig.VERSION_CODE}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            OutlinedButton(onClick = onCheckForUpdate, enabled = !state.loading, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Outlined.Refresh, null)
+                Text("检查版本更新", modifier = Modifier.padding(start = 6.dp))
+            }
         }
-        OutlinedButton(onClick = onLogout, modifier = Modifier.fillMaxWidth()) { Text("退出登录") }
     }
 }
 

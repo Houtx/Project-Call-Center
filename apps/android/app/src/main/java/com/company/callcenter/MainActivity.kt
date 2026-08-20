@@ -125,6 +125,7 @@ class MainActivity : ComponentActivity() {
                             telemetryAvailable = appContainer.usageTelemetry.isAvailable,
                             telemetryEnabled = telemetryEnabled,
                             onTelemetryEnabledChange = appContainer.usageTelemetry::setEnabled,
+                            onCheckForUpdate = ::checkForUpdateFromSettings,
                             onUseOffline = {
                                 if (!viewModel.state.value.loading && !viewModel.state.value.hasPendingCall) {
                                     appContainer.appModeStore.select(AppMode.OFFLINE)
@@ -138,6 +139,7 @@ class MainActivity : ComponentActivity() {
                             telemetryAvailable = appContainer.usageTelemetry.isAvailable,
                             telemetryEnabled = telemetryEnabled,
                             onTelemetryEnabledChange = appContainer.usageTelemetry::setEnabled,
+                            onCheckForUpdate = ::checkForUpdateFromSettings,
                             onUseOnline = {
                                 if (!offlineViewModel.state.value.loading && !offlineViewModel.state.value.hasPendingCall) {
                                     offlineViewModel.lock()
@@ -236,6 +238,35 @@ class MainActivity : ComponentActivity() {
                 } else {
                     updateState.value = StartupUpdateState.Failed(failure.toUpdateMessage())
                 }
+            }
+        }
+    }
+
+    private fun checkForUpdateFromSettings() {
+        if (updateJob?.isActive == true) return
+        updateJob = lifecycleScope.launch {
+            updateState.value = StartupUpdateState.Checking
+            try {
+                when (val result = updateManager.checkForUpdate()) {
+                    UpdateCheckResult.UpToDate -> {
+                        updateState.value = StartupUpdateState.Ready
+                        Toast.makeText(
+                            this@MainActivity,
+                            "当前已是最新版本 ${BuildConfig.VERSION_NAME}",
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                    is UpdateCheckResult.UpdateRequired -> downloadAndInstall(result.release)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Throwable) {
+                updateState.value = StartupUpdateState.Ready
+                Toast.makeText(
+                    this@MainActivity,
+                    failure.toUpdateMessage(),
+                    Toast.LENGTH_LONG,
+                ).show()
             }
         }
     }

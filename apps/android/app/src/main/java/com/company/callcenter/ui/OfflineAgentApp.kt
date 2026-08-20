@@ -1,5 +1,6 @@
 package com.company.callcenter.ui
 
+import com.company.callcenter.BuildConfig
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -94,6 +95,7 @@ fun OfflineAgentApp(
     telemetryAvailable: Boolean,
     telemetryEnabled: Boolean,
     onTelemetryEnabledChange: (Boolean) -> Unit,
+    onCheckForUpdate: () -> Unit,
     onUseOnline: () -> Unit,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -115,6 +117,7 @@ fun OfflineAgentApp(
                 telemetryEnabled = telemetryEnabled,
                 onTelemetryEnabledChange = onTelemetryEnabledChange,
                 viewModel = viewModel,
+                onCheckForUpdate = onCheckForUpdate,
                 onUseOnline = onUseOnline,
             )
         }
@@ -231,6 +234,7 @@ private fun OfflineMainScreen(
     telemetryEnabled: Boolean,
     onTelemetryEnabledChange: (Boolean) -> Unit,
     viewModel: OfflineViewModel,
+    onCheckForUpdate: () -> Unit,
     onUseOnline: () -> Unit,
 ) {
     var tab by remember { mutableIntStateOf(0) }
@@ -362,6 +366,7 @@ private fun OfflineMainScreen(
                     telemetryAvailable = telemetryAvailable,
                     telemetryEnabled = telemetryEnabled,
                     onTelemetryEnabledChange = onTelemetryEnabledChange,
+                    onCheckForUpdate = onCheckForUpdate,
                     onUseOnline = onUseOnline,
                 )
             }
@@ -692,67 +697,65 @@ private fun OfflineAccountScreen(
     telemetryAvailable: Boolean,
     telemetryEnabled: Boolean,
     onTelemetryEnabledChange: (Boolean) -> Unit,
+    onCheckForUpdate: () -> Unit,
     onUseOnline: () -> Unit,
 ) {
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Outlined.PhoneAndroid, contentDescription = null)
-            Text("离线模式", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(start = 10.dp))
-        }
-        Text("客户和通话数据仅保存在本机，不会同步到 CRM 服务器。", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        if (!permissionsGranted) OutlinedButton(onClick = requestPermissions) { Text("重新授权外呼权限") }
-        SimDialSettings(state.simDial, onSimModeChange)
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("单个号码最大外呼次数", fontWeight = FontWeight.Medium)
-            Text(
-                "用于防止误操作造成反复呼叫。未接通任务仍可按本周或自定义日期筛选；达到上限后需先提高次数才能再次拨号。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+        SettingsSection("本机离线账户") {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(
-                    onClick = { onMaximumAttemptsChange(state.maximumAttempts - 1) },
-                    enabled = !state.loading && state.maximumAttempts > 1,
-                ) {
+                Icon(Icons.Outlined.PhoneAndroid, contentDescription = null)
+                Text("离线模式", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(start = 10.dp))
+            }
+            Text("客户和通话数据仅保存在本机，不会同步到 CRM 服务器。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            OutlinedButton(onClick = onChangePassword, modifier = Modifier.fillMaxWidth()) { Text("修改离线密码") }
+            OutlinedButton(onClick = onLock, enabled = !state.loading, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Outlined.Lock, contentDescription = null)
+                Text("立即锁定", modifier = Modifier.padding(start = 8.dp))
+            }
+        }
+        SettingsSection("外呼权限与设备") {
+            if (permissionsGranted) Text("拨号与通话记录权限正常")
+            else OutlinedButton(onClick = requestPermissions) { Text("重新授权外呼权限") }
+        }
+        SettingsSection("SIM 拨号") { SimDialSettings(state.simDial, onSimModeChange) }
+        SettingsSection("外呼限制") {
+            Text("单个号码最大外呼次数", fontWeight = FontWeight.Medium)
+            Text("用于防止误操作造成反复呼叫。未接通任务仍可按日期筛选。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { onMaximumAttemptsChange(state.maximumAttempts - 1) }, enabled = !state.loading && state.maximumAttempts > 1) {
                     Icon(Icons.Outlined.Remove, contentDescription = "减少")
                 }
                 Text("${state.maximumAttempts} 次", style = MaterialTheme.typography.titleMedium)
-                IconButton(
-                    onClick = { onMaximumAttemptsChange(state.maximumAttempts + 1) },
-                    enabled = !state.loading && state.maximumAttempts < 10,
-                ) {
+                IconButton(onClick = { onMaximumAttemptsChange(state.maximumAttempts + 1) }, enabled = !state.loading && state.maximumAttempts < 10) {
                     Icon(Icons.Outlined.Add, contentDescription = "增加")
                 }
             }
         }
-        Text("清理已完成数据", fontWeight = FontWeight.Medium)
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf(10, 15, 30).forEach { days ->
-                OutlinedButton(onClick = { onCleanup(days) }, modifier = Modifier.weight(1f)) { Text("$days 天前") }
+        SettingsSection("本机数据") {
+            Text("清理已完成数据", fontWeight = FontWeight.Medium)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(10, 15, 30).forEach { days ->
+                    OutlinedButton(onClick = { onCleanup(days) }, modifier = Modifier.weight(1f)) { Text("$days 天前") }
+                }
+            }
+            Text("清理会同时删除联系人和关联通话明细；采集中的号码不会被删除。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        if (telemetryAvailable) SettingsSection("使用统计") { UsageTelemetrySetting(telemetryEnabled, onTelemetryEnabledChange) }
+        SettingsSection("关于与更新") {
+            Text("APP 版本 ${BuildConfig.VERSION_NAME}")
+            Text("构建号 ${BuildConfig.VERSION_CODE}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            OutlinedButton(onClick = onCheckForUpdate, enabled = !state.loading, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Outlined.Refresh, null)
+                Text("检查版本更新", modifier = Modifier.padding(start = 6.dp))
             }
         }
-        Text(
-            "清理会同时删除联系人和关联通话明细；采集中的号码不会被删除。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        if (telemetryAvailable) {
-            UsageTelemetrySetting(telemetryEnabled, onTelemetryEnabledChange)
-        }
-        OutlinedButton(onClick = onChangePassword, modifier = Modifier.fillMaxWidth()) { Text("修改离线密码") }
-        OutlinedButton(onClick = onLock, enabled = !state.loading, modifier = Modifier.fillMaxWidth()) {
-            Icon(Icons.Outlined.Lock, contentDescription = null)
-            Text("立即锁定", modifier = Modifier.padding(start = 8.dp))
-        }
-        OutlinedButton(
-            onClick = onUseOnline,
-            enabled = !state.loading && !state.hasPendingCall,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text("切换到在线模式")
+        SettingsSection("模式切换") {
+            OutlinedButton(onClick = onUseOnline, enabled = !state.loading && !state.hasPendingCall, modifier = Modifier.fillMaxWidth()) {
+                Text("切换到在线模式")
+            }
         }
     }
 }
