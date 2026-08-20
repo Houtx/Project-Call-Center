@@ -42,7 +42,7 @@
 ### 统计管理端
 
 1. 从公开 GitHub 仓库的已审核提交拉取 `services/telemetry`，安装到独立目录 `/opt/project-call-center-telemetry/current`。
-2. 使用 `python3 telemetry_server.py --hash-password '一次性输入的强密码'` 生成管理员 PBKDF2 哈希。明文密码不写入仓库、命令历史或 systemd unit。
+2. 使用 `python3 telemetry_server.py --hash-password '一次性输入的强密码'` 生成管理员 PBKDF2 哈希。明文密码不写入仓库、命令历史或 systemd unit；环境文件中的哈希仅用于首次建库，之后可在管理端修改密码，SQLite 中的密码与会话版本优先生效。
 3. 以 `services/telemetry/telemetry.env.example` 为参考创建权限 `0600` 的 `/etc/project-call-center-telemetry.env`，密码哈希、会话密钥和标识符 HMAC 密钥必须互不相同。
 4. 安装 `project-call-center-telemetry.service`，确认只监听 `127.0.0.1:18820`，并检查 `MemoryMax=96M`、`ProtectSystem=strict` 等限制已生效。
 5. 安装新 Nginx vhost 前必须执行 `nginx -t`；通过后只 reload Nginx。完成后验证首页登录、未登录 API 401、匿名上报 202、APK 下载和既有站点。

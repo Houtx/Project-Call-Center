@@ -20,6 +20,7 @@
         <option value="365">近 365 天</option>
       </select>
       <button id="refresh" type="button">刷新数据</button>
+      <button id="password-open" class="secondary" type="button">修改密码</button>
       <form method="post" action="/logout">
         <input type="hidden" name="csrf" value="__CSRF_TOKEN__">
         <button class="secondary" type="submit">退出</button>
@@ -57,6 +58,24 @@
     <div id="loading" class="loading-overlay" hidden><div class="loading-box"><span class="spinner"></span><strong>正在加载统计</strong></div></div>
     <p id="error" class="page-error" hidden></p>
   </main>
+
+  <dialog id="password-dialog" aria-labelledby="password-title">
+    <form id="password-form" class="password-form">
+      <input type="hidden" name="csrf" value="__CSRF_TOKEN__">
+      <h2 id="password-title">修改管理员密码</h2>
+      <label for="current-password">当前密码</label>
+      <input id="current-password" name="currentPassword" type="password" autocomplete="current-password" required>
+      <label for="new-password">新密码</label>
+      <input id="new-password" name="newPassword" type="password" autocomplete="new-password" minlength="12" maxlength="128" required>
+      <label for="confirm-password">确认新密码</label>
+      <input id="confirm-password" name="confirmPassword" type="password" autocomplete="new-password" minlength="12" maxlength="128" required>
+      <p id="password-error" class="form-error" aria-live="polite" hidden></p>
+      <div class="dialog-actions">
+        <button id="password-cancel" class="secondary" type="button">取消</button>
+        <button id="password-submit" type="submit">确认修改</button>
+      </div>
+    </form>
+  </dialog>
   <script src="/assets/dashboard.js" defer></script>
 </body>
 </html>

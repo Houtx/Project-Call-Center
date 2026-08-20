@@ -165,8 +165,8 @@ def keyed_hash(secret: bytes, value: str) -> str:
 
 
 def encode_password(password: str) -> str:
-    if len(password) < 12:
-        raise ValueError("password must contain at least 12 characters")
+    if not 12 <= len(password) <= 128:
+        raise ValueError("password must contain 12 to 128 characters")
     salt = secrets.token_bytes(16)
     iterations = 600_000
     digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations, dklen=32)
@@ -226,10 +226,17 @@ class Config:
 
 
 class TelemetryDatabase:
-    def __init__(self, path: Path, identifier_secret: bytes, retention_days: int) -> None:
+    def __init__(
+        self,
+        path: Path,
+        identifier_secret: bytes,
+        retention_days: int,
+        admin_password_hash: str,
+    ) -> None:
         self.path = path
         self.identifier_secret = identifier_secret
         self.retention_days = retention_days
+        self.admin_password_hash = admin_password_hash
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.initialize()
 
@@ -283,8 +290,50 @@ class TelemetryDatabase:
                     PRIMARY KEY (install_hash, metric_date, mode)
                 );
                 CREATE INDEX IF NOT EXISTS daily_call_metrics_date ON daily_call_metrics(metric_date);
+
+                CREATE TABLE IF NOT EXISTS admin_security (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                    password_hash TEXT NOT NULL,
+                    session_version INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
+            db.execute(
+                """
+                INSERT OR IGNORE INTO admin_security (
+                    singleton, password_hash, session_version, updated_at
+                ) VALUES (1, ?, 1, ?)
+                """,
+                (self.admin_password_hash, iso_timestamp()),
+            )
+
+    def admin_auth_state(self) -> tuple[str, int]:
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT password_hash, session_version FROM admin_security WHERE singleton = 1"
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("administrator security state is missing")
+        return row["password_hash"], row["session_version"]
+
+    def change_admin_password(self, current_password: str, new_password: str) -> int | None:
+        password_hash, session_version = self.admin_auth_state()
+        if not verify_password(current_password, password_hash):
+            return None
+        replacement_hash = encode_password(new_password)
+        with self.connection() as db:
+            cursor = db.execute(
+                """
+                UPDATE admin_security
+                SET password_hash = ?, session_version = session_version + 1, updated_at = ?
+                WHERE singleton = 1 AND password_hash = ? AND session_version = ?
+                """,
+                (replacement_hash, iso_timestamp(), password_hash, session_version),
+            )
+            if cursor.rowcount != 1:
+                return None
+        return session_version + 1
 
     def ingest(self, payload: dict[str, Any], client_ip: str, country_code: str) -> None:
         now = iso_timestamp()
@@ -522,6 +571,32 @@ class TelemetryHandler(BaseHTTPRequestHandler):
     def json_response(self, status: int, value: Any) -> None:
         self.respond(status, json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode(), "application/json; charset=utf-8")
 
+    def session_values(self, session_version: int) -> tuple[str, str]:
+        issued = int(time.time())
+        nonce = secrets.token_hex(16)
+        signed = f"{issued}.{session_version}.{nonce}"
+        signature = hmac.new(self.app.config.session_secret, signed.encode(), hashlib.sha256).hexdigest()
+        csrf = hmac.new(
+            self.app.config.session_secret,
+            f"csrf.{session_version}.{nonce}".encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        return f"{signed}.{signature}", csrf
+
+    def session_cookie(self, value: str) -> str:
+        secure = "; Secure" if self.app.config.secure_cookie else ""
+        return f"call_admin_session={value}; Path=/; Max-Age={SESSION_SECONDS}; HttpOnly{secure}; SameSite=Strict"
+
+    def json_session_response(self, status: int, value: Any, session_version: int) -> None:
+        body = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
+        session_value, _ = self.session_values(session_version)
+        self.send_response(status)
+        self.send_common_headers("application/json; charset=utf-8", len(body))
+        self.send_header("Set-Cookie", self.session_cookie(session_value))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
     def redirect(self, location: str) -> None:
         self.send_response(HTTPStatus.SEE_OTHER)
         self.send_header("Location", location)
@@ -535,13 +610,23 @@ class TelemetryHandler(BaseHTTPRequestHandler):
         if value is None:
             return None
         try:
-            issued_text, nonce, signature = value.value.split(".")
-            signed = f"{issued_text}.{nonce}".encode()
+            issued_text, version_text, nonce, signature = value.value.split(".")
+            signed = f"{issued_text}.{version_text}.{nonce}".encode()
             expected = hmac.new(self.app.config.session_secret, signed, hashlib.sha256).hexdigest()
             issued = int(issued_text)
-            if not hmac.compare_digest(signature, expected) or not 0 <= time.time() - issued <= SESSION_SECONDS:
+            session_version = int(version_text)
+            current_version = self.app.database.admin_auth_state()[1]
+            if (
+                session_version != current_version
+                or not hmac.compare_digest(signature, expected)
+                or not 0 <= time.time() - issued <= SESSION_SECONDS
+            ):
                 return None
-            csrf = hmac.new(self.app.config.session_secret, f"csrf.{nonce}".encode(), hashlib.sha256).hexdigest()
+            csrf = hmac.new(
+                self.app.config.session_secret,
+                f"csrf.{session_version}.{nonce}".encode(),
+                hashlib.sha256,
+            ).hexdigest()
             return issued, csrf
         except (ValueError, AttributeError):
             return None
@@ -634,6 +719,9 @@ class TelemetryHandler(BaseHTTPRequestHandler):
         if path == "/login":
             self.handle_login()
             return
+        if path == "/admin/api/password":
+            self.handle_change_password()
+            return
         if path == "/logout":
             session = self.session_payload()
             try:
@@ -679,28 +767,59 @@ class TelemetryHandler(BaseHTTPRequestHandler):
             return
         username = values.get("username", [""])[0]
         password = values.get("password", [""])[0]
+        password_hash, session_version = self.app.database.admin_auth_state()
         valid = hmac.compare_digest(username, self.app.config.admin_username) and verify_password(
-            password, self.app.config.admin_password_hash
+            password, password_hash
         )
         if not valid:
             self.app.login_limiter.failed(client_ip)
             time.sleep(0.4)
             self.redirect("/login?error=1")
             return
-        issued = int(time.time())
-        nonce = secrets.token_hex(16)
-        signed = f"{issued}.{nonce}"
-        signature = hmac.new(self.app.config.session_secret, signed.encode(), hashlib.sha256).hexdigest()
-        secure = "; Secure" if self.app.config.secure_cookie else ""
+        session_value, _ = self.session_values(session_version)
         self.send_response(HTTPStatus.SEE_OTHER)
         self.send_header("Location", "/admin")
-        self.send_header(
-            "Set-Cookie",
-            f"call_admin_session={signed}.{signature}; Path=/; Max-Age={SESSION_SECONDS}; HttpOnly{secure}; SameSite=Strict",
-        )
+        self.send_header("Set-Cookie", self.session_cookie(session_value))
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", "0")
         self.end_headers()
+
+    def handle_change_password(self) -> None:
+        session = self.session_payload()
+        if session is None:
+            self.json_response(HTTPStatus.UNAUTHORIZED, {"message": "请先登录"})
+            return
+        client_ip = self.client_ip()
+        if not self.app.login_limiter.allowed(client_ip):
+            self.json_response(HTTPStatus.TOO_MANY_REQUESTS, {"message": "请稍后重试"})
+            return
+        try:
+            values = urllib.parse.parse_qs(self.read_body().decode())
+        except (ValueError, UnicodeDecodeError):
+            self.json_response(HTTPStatus.BAD_REQUEST, {"message": "请求格式无效"})
+            return
+        if not hmac.compare_digest(values.get("csrf", [""])[0], session[1]):
+            self.json_response(HTTPStatus.FORBIDDEN, {"message": "页面已过期，请刷新后重试"})
+            return
+        current_password = values.get("currentPassword", [""])[0]
+        new_password = values.get("newPassword", [""])[0]
+        if len(current_password) > 1024:
+            self.json_response(HTTPStatus.BAD_REQUEST, {"message": "当前密码无效"})
+            return
+        if current_password == new_password:
+            self.json_response(HTTPStatus.BAD_REQUEST, {"message": "新密码不能与当前密码相同"})
+            return
+        try:
+            session_version = self.app.database.change_admin_password(current_password, new_password)
+        except ValueError:
+            self.json_response(HTTPStatus.BAD_REQUEST, {"message": "新密码必须为 12 至 128 个字符"})
+            return
+        if session_version is None:
+            self.app.login_limiter.failed(client_ip)
+            time.sleep(0.4)
+            self.json_response(HTTPStatus.FORBIDDEN, {"message": "当前密码不正确"})
+            return
+        self.json_session_response(HTTPStatus.OK, {"changed": True}, session_version)
 
 
 class TelemetryServer(ThreadingHTTPServer):
@@ -708,7 +827,12 @@ class TelemetryServer(ThreadingHTTPServer):
 
     def __init__(self, config: Config) -> None:
         self.config = config
-        self.database = TelemetryDatabase(config.database_path, config.identifier_secret, config.retention_days)
+        self.database = TelemetryDatabase(
+            config.database_path,
+            config.identifier_secret,
+            config.retention_days,
+            config.admin_password_hash,
+        )
         self.login_limiter = LoginLimiter()
         super().__init__((config.bind_host, config.bind_port), TelemetryHandler)
 

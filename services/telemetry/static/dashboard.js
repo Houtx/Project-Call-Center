@@ -42,6 +42,10 @@ function renderTrend(rows) {
   const maximum = Math.max(1, ...rows.map((row) => row.calls));
   const svgNamespace = 'http://www.w3.org/2000/svg';
   const width = Math.max(720, rows.length * 22);
+  const labelCount = Math.min(10, rows.length);
+  const labelIndexes = new Set(Array.from({ length: labelCount }, (_, index) => (
+    labelCount === 1 ? 0 : Math.round(index * (rows.length - 1) / (labelCount - 1))
+  )));
   const svg = document.createElementNS(svgNamespace, 'svg');
   svg.classList.add('trend-svg');
   svg.setAttribute('viewBox', `0 0 ${width} 210`);
@@ -66,11 +70,11 @@ function renderTrend(rows) {
     title.textContent = `${row.date}：外呼 ${row.calls}，接通 ${row.connected}，活跃安装 ${row.installations}`;
     bar.append(title);
     svg.append(bar);
-    if (rows.length <= 31 || index % Math.ceil(rows.length / 15) === 0) {
+    if (labelIndexes.has(index)) {
       const label = document.createElementNS(svgNamespace, 'text');
       label.setAttribute('x', String(index * slot + slot / 2));
       label.setAttribute('y', '202');
-      label.setAttribute('text-anchor', 'middle');
+      label.setAttribute('text-anchor', index === 0 ? 'start' : index === rows.length - 1 ? 'end' : 'middle');
       label.textContent = row.date.slice(5);
       svg.append(label);
     }
@@ -156,6 +160,52 @@ async function load() {
     byId('loading').hidden = true;
   }
 }
+
+const passwordDialog = byId('password-dialog');
+const passwordForm = byId('password-form');
+const passwordError = byId('password-error');
+const passwordSubmit = byId('password-submit');
+
+function showPasswordError(message) {
+  passwordError.textContent = message;
+  passwordError.hidden = false;
+}
+
+byId('password-open').addEventListener('click', () => {
+  passwordForm.reset();
+  passwordError.hidden = true;
+  passwordDialog.showModal();
+  byId('current-password').focus();
+});
+byId('password-cancel').addEventListener('click', () => passwordDialog.close());
+passwordDialog.addEventListener('click', (event) => {
+  if (event.target === passwordDialog) passwordDialog.close();
+});
+passwordForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  passwordError.hidden = true;
+  if (byId('new-password').value !== byId('confirm-password').value) {
+    showPasswordError('两次输入的新密码不一致');
+    return;
+  }
+  passwordSubmit.disabled = true;
+  try {
+    const response = await fetch('/admin/api/password', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+      body: new URLSearchParams(new FormData(passwordForm)),
+    });
+    if (response.status === 401) { location.href = '/login'; return; }
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.message || `HTTP ${response.status}`);
+    location.reload();
+  } catch (error) {
+    showPasswordError(error.message);
+  } finally {
+    passwordSubmit.disabled = false;
+  }
+});
 
 byId('range').addEventListener('change', load);
 byId('refresh').addEventListener('click', load);
