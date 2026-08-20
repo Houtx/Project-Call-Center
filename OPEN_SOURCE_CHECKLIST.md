@@ -6,7 +6,7 @@
 
 1. 从干净克隆目录检查工作树，确认 `git status --short` 只包含计划公开的改动。
 2. 确认未跟踪或被忽略的 `.env`、`.env.production`、`.local-data/`、`backups/`、`uploads/`、签名证书、APK/AAB 和私有笔记没有被 `git add -f`。APK 可以作为 GitHub Release 资产发布，但不能提交进 Git 历史。
-3. 为 APK 更新配置本源码仓库的 Release 地址，并在构建 Release 时通过未提交的 `CALL_CENTER_UPDATE_MANIFEST_URL` 和 `CALL_CENTER_UPDATE_RELEASES_BASE_URL` 传入。每个正式 Release 同时发布 APK 和 `release.json`。
+3. 构建 Release 时通过未提交的 `CALL_CENTER_UPDATE_MANIFEST_URL` 和 `CALL_CENTER_UPDATE_RELEASES_BASE_URL` 指向生产更新服务。每个正式版本必须把相同的 APK 和 `release.json` 同步到生产更新服务器与本源码仓库的 GitHub Release。
 4. 创建或选定开源许可证。许可证选择涉及法律责任，未确定前不要将仓库标记为已授权开源。
 5. 在公开前运行依赖漏洞扫描、许可证扫描、测试与构建，并审查所有迁移、示例和文档。
 

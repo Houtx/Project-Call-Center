@@ -115,7 +115,7 @@ CSV 可以从 [examples/customers-template.csv](examples/customers-template.csv)
 - 设备兼容校验：默认开启，要求品牌、型号和 Android API 命中机型白名单。关闭后跳过这三项白名单检查，允许未列入白名单的 Android 12+ 设备登录；APP 最低版本、设备状态和拨号/通话记录权限仍然必须满足。
 - 机型白名单：只有启用的精确品牌+型号+Android API 组合可登录和外呼。
 
-GitHub Release 启动门禁与服务端版本策略是两层校验。发布新 APK 后要同步检查 Release 清单和 Web 最低/最新版本号。开启“强制升级”前，必须确保最新版 APK 已可下载。
+生产更新服务的启动门禁与服务端版本策略是两层校验。发布新 APK 后要同步检查生产清单、GitHub Release 和 Web 最低/最新版本号。开启“强制升级”前，必须确保最新版 APK 已可下载。
 
 ### 8. 拒呼名单
 
@@ -143,8 +143,8 @@ GitHub Release 启动门禁与服务端版本策略是两层校验。发布新 A
 
 ### 1. 首次安装与更新门禁
 
-1. 从本源码仓库的 GitHub Release 页安装已签名 APK。APK 是 Release 资产，不提交进 Git 历史；Release 中不得包含客户数据或生产配置。
-2. APP 每次进程冷启动都先请求 GitHub `release.json`；普通后台恢复或从系统拨号器返回不会重复检查。
+1. 从本源码仓库的 GitHub Release 页或公司指定下载地址安装已签名 APK。APK 是 Release 资产，不提交进 Git 历史；Release 中不得包含客户数据或生产配置。
+2. APP 每次进程冷启动都先请求 `https://call.haoyunqiankun.com/release.json`；普通后台恢复或从系统拨号器返回不会重复检查。
 3. 新版本存在时，APP 下载 APK，校验大小、SHA-256、包名、版本号和签名，然后打开系统安装器。
 4. 如系统要求“允许此来源安装应用”，授权后回到 APP 继续安装。
 5. 更新检查失败、下载失败或取消安装时，APP 保持锁定；恢复网络或完成安装后才能继续使用。
@@ -239,7 +239,7 @@ APP 需要：
 
 | 现象 | 首先检查 | 处理 |
 | --- | --- | --- |
-| APP 一直停在“正在检查更新” | 手机是否可访问主仓库 Release 中的 `release.json` | 恢复网络后点击重试；更新源不可达时 APP 不会绕过检查进入业务 |
+| APP 一直停在“正在检查更新” | 手机是否可访问 `https://call.haoyunqiankun.com/release.json` | 恢复网络后点击重试；生产更新源不可达时 APP 不会绕过检查进入业务，可由管理员从 GitHub Release 人工分发同版 APK |
 | 独立模式忘记密码 | 是否仍记得正确密码 | 密码无法找回；只能清除 APP 数据并重新导入，原本机记录会丢失 |
 | 无法安装更新 | “允许此来源安装”权限、存储空间 | 授权后返回 APP，重新打开系统安装器 |
 | 服务器地址无法验证 | HTTPS、域名、证书、`/api/v1/health` | 使用域名或完整 HTTPS 地址，不要携带查询参数 |

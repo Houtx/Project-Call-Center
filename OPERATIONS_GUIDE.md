@@ -196,7 +196,7 @@ docker compose --env-file deploy/.env.production -f deploy/compose.production.ya
 
 ### 发布资产
 
-APK 与源码统一使用本项目的 GitHub Release。APK 只作为 Release 资产发布，不提交进 Git 历史；Release 中不得包含生产配置、客户数据或签名证书。每个版本至少包含：
+APK 自动更新以 `https://call.haoyunqiankun.com` 为主，GitHub Release 作为公开下载和备用分发入口。APK 只作为发布资产，不提交进 Git 历史；发布内容不得包含生产配置、客户数据或签名证书。两个发布位置每个版本都至少包含：
 
 - 正式签名 APK
 - `release.json`
@@ -206,12 +206,12 @@ APK 与源码统一使用本项目的 GitHub Release。APK 只作为 Release 资
 ### 发布验收
 
 1. 在干净环境构建 Release，通过单测、lint、APK 包名/版本/签名验证。
-2. 上传资产后，通过 `releases/latest/download/release.json` 获取清单，再从公开 URL 重新下载 APK 校验 SHA-256 和文件大小。
+2. 先使用 `scripts/publish-android-update-server.sh` 同步生产更新服务，再创建 GitHub Release。分别从两个公开地址重新下载 APK，校验 SHA-256 和文件大小。
 3. 在真机用上一版本验证检查、下载、未知来源授权、系统安装器和更新后登录。
 4. 更新 Web 中的最低/最新 `versionCode` 和 HTTPS 下载地址。当前“强制升级”是全局锁定开关，会阻止包括最新版在内的所有设备；常规发布使用最低版本号门槛并保持该开关关闭。
 5. 保留上一个可用 APK，但不允许用降低版本号的 APK 直接覆盖安装。
 
-APP 进程冷启动时检查更新；从后台普通返回或从系统拨号器返回不会重复检查。更新源不可达、清单无效、APK 校验失败或客户端低于曾发现的最高 `versionCode` 时均会锁定，不再使用旧缓存放行。更新源必须部署可用性监控，并准备管理员手动分发 APK 的应急流程。
+APP 进程冷启动时从生产更新域名检查更新；从后台普通返回或从系统拨号器返回不会重复检查。更新源不可达、清单无效、APK 校验失败或客户端低于曾发现的最高 `versionCode` 时均会锁定，不再使用旧缓存放行。更新服务的部署、同步、回滚和监控见 [Android 更新服务指南](ANDROID_UPDATE_SERVER_GUIDE.md)。
 
 如构建时配置 `CALL_CENTER_TELEMETRY_URL`，接收端必须只接受文档约定的匿名每日聚合、限制请求大小和频率，并配置明确的数据保留期。该功能默认关闭，用户拒绝后不得发送；接收端不得尝试用 IP、User-Agent 或其他字段还原客户、坐席或设备身份。
 
