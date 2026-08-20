@@ -50,21 +50,22 @@ CALL_CENTER_UPDATE_RELEASES_BASE_URL=https://call.haoyunqiankun.com/releases/
 ```
 
 3. 生成 `release-assets/release.json`，核对版本、包名、文件名、大小和 SHA-256。
-4. 先同步更新服务器并完成公网复验：
+4. 将代码推送到公开仓库，使用完全相同的 APK 和 `release.json` 创建 GitHub Release。
+5. GitHub Release 发布成功后，触发生产服务器直接从 GitHub 下载两个资产并完成公网复验：
 
 ```bash
 UPDATE_SERVER_SSH='受控运维账号@服务器' \
 UPDATE_SERVER_IDENTITY_FILE='/本机私钥绝对路径' \
 ./scripts/publish-android-update-server.sh \
-  release-assets/release.json \
-  release-assets/project-call-center-agent-vX.Y.Z.apk
+  release-assets/release.json
 ```
 
-5. 使用完全相同的 APK 和 `release.json` 创建 GitHub Release。
+GitHub 仓库默认为 `Houtx/Project-Call-Center`；在 fork 或其他公开仓库发布时，通过 `UPDATE_GITHUB_REPOSITORY='owner/repository'` 显式覆盖。
+
 6. 从更新服务器和 GitHub 各下载一次 APK，核对 SHA-256、大小、包名、版本号和签名。
 7. 使用上一版本真机验证自动检查、下载、系统安装和更新后离线数据仍可解锁。
 
-同步脚本会拒绝哈希或大小不匹配的文件，也会拒绝用不同内容覆盖已经存在的同版本 APK。只有 APK 安装完成后才会替换根清单。
+同步脚本不从本机上传 APK。生产服务器会直接下载 GitHub Release 中的清单和 APK，并拒绝清单哈希、APK 哈希或大小不匹配的文件；也会拒绝用不同内容覆盖已经存在的同版本 APK。只有 APK 校验成功后才会替换根清单。
 
 ## 回滚与故障处理
 

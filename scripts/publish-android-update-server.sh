@@ -5,10 +5,10 @@ UPDATE_SERVER_SSH="${UPDATE_SERVER_SSH:?set UPDATE_SERVER_SSH, for example deplo
 UPDATE_SERVER_IDENTITY_FILE="${UPDATE_SERVER_IDENTITY_FILE:-}"
 UPDATE_SERVER_ROOT="${UPDATE_SERVER_ROOT:-/opt/project-call-center-update/public}"
 UPDATE_SERVER_BASE_URL="${UPDATE_SERVER_BASE_URL:-https://call.haoyunqiankun.com}"
+UPDATE_GITHUB_REPOSITORY="${UPDATE_GITHUB_REPOSITORY:-Houtx/Project-Call-Center}"
 MANIFEST_PATH="${1:-release-assets/release.json}"
-APK_PATH="${2:-}"
 
-for command_name in node ssh scp curl; do
+for command_name in node ssh curl; do
   command -v "$command_name" >/dev/null || {
     echo "Missing required command: $command_name" >&2
     exit 1
@@ -21,6 +21,10 @@ done
 }
 [[ "$UPDATE_SERVER_BASE_URL" == https://* ]] || {
   echo "UPDATE_SERVER_BASE_URL must use HTTPS" >&2
+  exit 1
+}
+[[ "$UPDATE_GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || {
+  echo "UPDATE_GITHUB_REPOSITORY must use owner/repository format" >&2
   exit 1
 }
 [[ -f "$MANIFEST_PATH" ]] || {
@@ -52,37 +56,18 @@ expected_size="$(node -e '
   if (!Number.isSafeInteger(manifest.sizeBytes) || manifest.sizeBytes <= 0) process.exit(1);
   process.stdout.write(String(manifest.sizeBytes));
 ' "$MANIFEST_PATH")"
-
-if [[ -z "$APK_PATH" ]]; then
-  APK_PATH="$(dirname "$MANIFEST_PATH")/$apk_asset"
-fi
-[[ -f "$APK_PATH" ]] || {
-  echo "APK not found: $APK_PATH" >&2
-  exit 1
-}
-[[ "$(basename "$APK_PATH")" == "$apk_asset" ]] || {
-  echo "APK filename must match release.json: $apk_asset" >&2
-  exit 1
-}
-
-node -e '
+expected_manifest_sha256="$(node -e '
   const crypto = require("crypto");
   const fs = require("fs");
-  const apk = fs.readFileSync(process.argv[1]);
-  const expectedHash = process.argv[2];
-  const expectedSize = Number(process.argv[3]);
-  const actualHash = crypto.createHash("sha256").update(apk).digest("hex");
-  if (apk.length !== expectedSize || actualHash !== expectedHash) {
-    console.error(`APK does not match release.json: sha256=${actualHash} size=${apk.length}`);
-    process.exit(1);
-  }
-' "$APK_PATH" "$expected_sha256" "$expected_size"
+  process.stdout.write(crypto.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex"));
+' "$MANIFEST_PATH")"
+github_release_base="https://github.com/$UPDATE_GITHUB_REPOSITORY/releases/download/$release_tag"
+github_manifest_url="$github_release_base/release.json"
+github_apk_url="$github_release_base/$apk_asset"
 
 ssh_args=( -o BatchMode=yes -o StrictHostKeyChecking=accept-new )
-scp_args=( -o BatchMode=yes -o StrictHostKeyChecking=accept-new )
 if [[ -n "$UPDATE_SERVER_IDENTITY_FILE" ]]; then
   ssh_args+=( -i "$UPDATE_SERVER_IDENTITY_FILE" )
-  scp_args+=( -i "$UPDATE_SERVER_IDENTITY_FILE" )
 fi
 
 remote_tmp="$(ssh "${ssh_args[@]}" "$UPDATE_SERVER_SSH" 'mktemp -d /tmp/project-call-center-update.XXXXXX')"
@@ -95,11 +80,10 @@ cleanup_remote() {
 }
 trap cleanup_remote EXIT
 
-scp "${scp_args[@]}" "$MANIFEST_PATH" "$UPDATE_SERVER_SSH:$remote_tmp/release.json"
-scp "${scp_args[@]}" "$APK_PATH" "$UPDATE_SERVER_SSH:$remote_tmp/$apk_asset"
-
 ssh "${ssh_args[@]}" "$UPDATE_SERVER_SSH" sudo -n bash -s -- \
-  "$remote_tmp" "$UPDATE_SERVER_ROOT" "$release_tag" "$apk_asset" "$expected_sha256" "$expected_size" <<'REMOTE_SCRIPT'
+  "$remote_tmp" "$UPDATE_SERVER_ROOT" "$release_tag" "$apk_asset" \
+  "$expected_sha256" "$expected_size" "$expected_manifest_sha256" \
+  "$github_manifest_url" "$github_apk_url" <<'REMOTE_SCRIPT'
 set -euo pipefail
 incoming_dir="$1"
 public_root="$2"
@@ -107,11 +91,28 @@ release_tag="$3"
 apk_asset="$4"
 expected_sha256="$5"
 expected_size="$6"
+expected_manifest_sha256="$7"
+github_manifest_url="$8"
+github_apk_url="$9"
 incoming_apk="$incoming_dir/$apk_asset"
 incoming_manifest="$incoming_dir/release.json"
 target_dir="$public_root/releases/$release_tag"
 target_apk="$target_dir/$apk_asset"
 
+for command_name in curl sha256sum stat install; do
+  command -v "$command_name" >/dev/null || {
+    echo "Missing required server command: $command_name" >&2
+    exit 1
+  }
+done
+
+curl -fL --retry 5 --connect-timeout 15 --max-time 120 \
+  "$github_manifest_url" -o "$incoming_manifest"
+actual_manifest_sha256="$(sha256sum "$incoming_manifest" | awk '{print $1}')"
+test "$actual_manifest_sha256" = "$expected_manifest_sha256"
+
+curl -fL --retry 5 --connect-timeout 15 --max-time 600 \
+  "$github_apk_url" -o "$incoming_apk"
 actual_sha256="$(sha256sum "$incoming_apk" | awk '{print $1}')"
 actual_size="$(stat -c '%s' "$incoming_apk")"
 test "$actual_sha256" = "$expected_sha256"
@@ -149,3 +150,4 @@ node -e '
 ' "$verify_dir/release.json" "$verify_dir/$apk_asset" "$release_tag" "$apk_asset"
 
 echo "Published Android update: $UPDATE_SERVER_BASE_URL/releases/$release_tag/$apk_asset"
+echo "Downloaded by the production server from: $github_release_base"

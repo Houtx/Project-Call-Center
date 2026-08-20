@@ -246,7 +246,7 @@ Android 模拟器连接本机 API 时使用 `http://10.0.2.2:8800/api/v1/`。真
 
 正式 APK 与源码版本统一发布在本仓库的 [GitHub Releases](https://github.com/Houtx/Project-Call-Center/releases)。APK 只作为 Release 资产发布，不提交进 Git 历史；每个版本同时提供 APK 和 `release.json`。APP 自动更新使用 `https://call.haoyunqiankun.com`，GitHub Release 作为公开下载和备用分发入口。
 
-Release APK 必须使用长期保管的正式签名证书，并在构建时将更新清单和下载基地址指向生产更新服务。每次发布必须把完全相同的 APK 和清单同时同步到更新服务器与 GitHub Release。详细要求见 [Android 更新服务指南](ANDROID_UPDATE_SERVER_GUIDE.md)、[Android 设备验证](docs/android-device-validation.md)、[开发指南](DEVELOPMENT_GUIDE.md) 和 [运维指南](OPERATIONS_GUIDE.md)。
+Release APK 必须使用长期保管的正式签名证书，并在构建时将更新清单和下载基地址指向生产更新服务。每次发布先上传完全相同的 APK 和清单到 GitHub Release，再由生产更新服务器直接从该 Release 拉取并校验，无需从本机上传 APK。详细要求见 [Android 更新服务指南](ANDROID_UPDATE_SERVER_GUIDE.md)、[Android 设备验证](docs/android-device-validation.md)、[开发指南](DEVELOPMENT_GUIDE.md) 和 [运维指南](OPERATIONS_GUIDE.md)。
 
 ## 验证代码
 
