@@ -25,6 +25,7 @@ import com.company.callcenter.telephony.CallObservationPolicy
 import com.company.callcenter.telephony.CallLogReader
 import com.company.callcenter.telephony.CallRecorder
 import com.company.callcenter.telephony.CallRecordingService
+import com.company.callcenter.telemetry.CallMetricsRecorder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
@@ -62,6 +63,7 @@ class CallCenterRepository(
     private val session: SessionStore,
     private val callLogReader: CallLogReader,
     private val callRecorder: CallRecorder,
+    private val callMetricsRecorder: CallMetricsRecorder = CallMetricsRecorder.NOOP,
 ) {
     private val tokenRefreshMutex = Mutex()
     private val serverConfigurationMutex = Mutex()
@@ -437,6 +439,13 @@ class CallCenterRepository(
                                 syncedAt = System.currentTimeMillis(),
                             ),
                         )
+                        callMetricsRecorder.record(
+                            pending.attemptId,
+                            AppMode.ONLINE,
+                            "UNKNOWN",
+                            null,
+                            pending.initiatedAt,
+                        )
                         dao.markCallResultSynced(pending.attemptId)
                         val recordingSettled = !pending.recordingRequested || finishRecordingLocked(pending.attemptId)
                         if (recordingSettled) dao.deletePendingCall(pending.attemptId)
@@ -475,6 +484,13 @@ class CallCenterRepository(
                             durationSeconds = matched.durationSeconds,
                             syncedAt = System.currentTimeMillis(),
                         ),
+                    )
+                    callMetricsRecorder.record(
+                        pending.attemptId,
+                        AppMode.ONLINE,
+                        CallObservationPolicy.classify(matched.durationSeconds),
+                        matched.durationSeconds,
+                        matched.startedAt,
                     )
                     dao.markCallResultSynced(pending.attemptId)
                 }

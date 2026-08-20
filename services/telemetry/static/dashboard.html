@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>外呼运营统计</title>
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">Project Call Center</p>
+      <h1>外呼运营统计</h1>
+    </div>
+    <div class="header-actions">
+      <select id="range" aria-label="统计时间范围">
+        <option value="7">近 7 天</option>
+        <option value="30" selected>近 30 天</option>
+        <option value="90">近 90 天</option>
+        <option value="365">近 365 天</option>
+      </select>
+      <button id="refresh" type="button">刷新数据</button>
+      <form method="post" action="/logout">
+        <input type="hidden" name="csrf" value="__CSRF_TOKEN__">
+        <button class="secondary" type="submit">退出</button>
+      </form>
+    </div>
+  </header>
+
+  <main class="dashboard">
+    <p id="notice" class="notice"></p>
+    <section id="metrics" class="metrics-grid" aria-label="核心指标"></section>
+
+    <section class="dashboard-section">
+      <div class="section-heading">
+        <div><h2>每日趋势</h2><p>活跃安装与外呼量按日汇总</p></div>
+        <span id="updated-at" class="muted"></span>
+      </div>
+      <div id="trend" class="trend-chart" role="img" aria-label="每日外呼趋势"></div>
+    </section>
+
+    <section class="split-grid">
+      <div class="dashboard-section"><h2>版本与设备</h2><div id="versions" class="bar-list"></div><div id="android" class="bar-list compact"></div></div>
+      <div class="dashboard-section"><h2>使用模式</h2><div id="modes" class="bar-list"></div></div>
+      <div class="dashboard-section"><h2>地区概览</h2><div id="countries" class="bar-list"></div><div id="timezones" class="bar-list compact"></div></div>
+    </section>
+
+    <section class="dashboard-section">
+      <div class="section-heading"><div><h2>最近活跃安装</h2><p>随机标识和 IP 均经过脱敏，明细按保留周期自动清理</p></div></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>最后活跃</th><th>安装标识</th><th>模式</th><th>APP</th><th>Android</th><th>国家/时区</th><th>脱敏 IP</th></tr></thead>
+          <tbody id="recent"></tbody>
+        </table>
+      </div>
+    </section>
+    <div id="loading" class="loading-overlay" hidden><div class="loading-box"><span class="spinner"></span><strong>正在加载统计</strong></div></div>
+    <p id="error" class="page-error" hidden></p>
+  </main>
+  <script src="/assets/dashboard.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,32 @@
+[Unit]
+Description=Project Call Center anonymous telemetry dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/project-call-center-telemetry/current
+EnvironmentFile=/etc/project-call-center-telemetry.env
+ExecStart=/usr/bin/python3 /opt/project-call-center-telemetry/current/telemetry_server.py
+Restart=on-failure
+RestartSec=3
+StateDirectory=project-call-center-telemetry
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/project-call-center-telemetry
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+MemoryHigh=64M
+MemoryMax=96M
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target

@@ -10,6 +10,8 @@
 
 此服务只通过 Nginx 提供静态 `release.json` 和已签名 APK，不运行 Node、Java、数据库或常驻容器。它适合与其他服务共享低配服务器，但仍需监控磁盘、Nginx 和证书续期。
 
+首页另由 `services/telemetry` 中的 Python 标准库服务提供匿名运营统计。它只监听回环地址 `127.0.0.1:18820`，使用 SQLite 单文件存储，不引入容器、PostgreSQL 或第三方地理查询服务。Nginx 继续为唯一公网入口。
+
 仓库是公开的，因此本文档不记录服务器 IP、SSH 用户、私钥路径、Cloudflare 凭据或签名密码。实际连接信息只保存在受控运维环境中。
 
 ## 目录和缓存规则
@@ -18,8 +20,8 @@
 /opt/project-call-center-update/public/
 ├── release.json
 └── releases/
-    └── v0.6.5/
-        └── project-call-center-agent-v0.6.5.apk
+    └── v0.6.6/
+        └── project-call-center-agent-v0.6.6.apk
 ```
 
 - `release.json` 禁止缓存，发布时最后原子替换。
@@ -37,6 +39,15 @@
 6. 必须先执行 `sudo nginx -t`；通过后只执行 `sudo systemctl reload nginx`，禁止重启整台服务器或其他项目。
 7. 检查 `/healthz`、清单、APK、TLS 证书，并重复验证所有既有站点。
 
+### 统计管理端
+
+1. 从公开 GitHub 仓库的已审核提交拉取 `services/telemetry`，安装到独立目录 `/opt/project-call-center-telemetry/current`。
+2. 使用 `python3 telemetry_server.py --hash-password '一次性输入的强密码'` 生成管理员 PBKDF2 哈希。明文密码不写入仓库、命令历史或 systemd unit。
+3. 以 `services/telemetry/telemetry.env.example` 为参考创建权限 `0600` 的 `/etc/project-call-center-telemetry.env`，密码哈希、会话密钥和标识符 HMAC 密钥必须互不相同。
+4. 安装 `project-call-center-telemetry.service`，确认只监听 `127.0.0.1:18820`，并检查 `MemoryMax=96M`、`ProtectSystem=strict` 等限制已生效。
+5. 安装新 Nginx vhost 前必须执行 `nginx -t`；通过后只 reload Nginx。完成后验证首页登录、未登录 API 401、匿名上报 202、APK 下载和既有站点。
+6. SQLite 数据位于 `/var/lib/project-call-center-telemetry`；每日使用 SQLite 在线备份接口生成加密离站备份，不直接复制正在写入的数据库文件。
+
 ## 每次发布 APK 的强制流程
 
 每个 Android Release 必须同时同步到本更新服务和 GitHub Release。漏掉更新服务器会导致国内客户端无法升级；漏掉 GitHub Release 会失去公开下载和备用分发入口。
@@ -47,6 +58,7 @@
 ```bash
 CALL_CENTER_UPDATE_MANIFEST_URL=https://call.haoyunqiankun.com/release.json
 CALL_CENTER_UPDATE_RELEASES_BASE_URL=https://call.haoyunqiankun.com/releases/
+CALL_CENTER_TELEMETRY_URL=https://call.haoyunqiankun.com/api/telemetry/v1/daily
 ```
 
 3. 生成 `release-assets/release.json`，核对版本、包名、文件名、大小和 SHA-256。
@@ -89,3 +101,5 @@ GitHub 仓库默认为 `Houtx/Project-Call-Center`；在 fork 或其他公开仓
 - `call.haoyunqiankun.com` 已启用独立 Nginx vhost 和 Let's Encrypt 证书，证书由 Certbot 定时任务自动续期；首次部署已完成 `certbot renew --dry-run` 演练。
 - 首次上线已同步 `v0.6.3`，公网清单与 APK 的大小、SHA-256 校验一致。
 - 上线前后既有站点的公网和源站 HTTP 状态保持一致；部署过程只执行 Nginx 配置检查和 reload，没有重启其他服务。
+- 统计管理端已部署为独立 systemd 服务，只监听 `127.0.0.1:18820`，实测常驻内存约 14 MiB，内存硬上限 96 MiB。
+- 新 vhost 上线前通过独立候选配置和正式配置两次 `nginx -t`，只 reload Nginx；库存、LazyFish 和许可证站点状态与上线前一致。

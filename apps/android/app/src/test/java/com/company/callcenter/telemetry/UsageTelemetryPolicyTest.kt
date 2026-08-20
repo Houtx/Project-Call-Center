@@ -58,12 +58,34 @@ class UsageTelemetryPolicyTest {
             appVersion = "1.0.0",
             androidApi = 35,
             mode = "offline",
+            locale = "zh-CN",
+            timezone = "Asia/Shanghai",
+            dailyMetrics = listOf(
+                UsageTelemetryDailyMetric(
+                    date = TODAY,
+                    mode = "offline",
+                    callCount = 3,
+                    connectedCount = 1,
+                    notConnectedCount = 1,
+                    unknownCount = 1,
+                    totalDurationSeconds = 60,
+                ),
+            ),
         )
 
         val keys = JsonParser.parseString(Gson().toJson(payload)).asJsonObject.keySet()
 
         assertEquals(
-            setOf("anonymousId", "date", "appVersion", "androidApi", "mode"),
+            setOf(
+                "anonymousId",
+                "date",
+                "appVersion",
+                "androidApi",
+                "mode",
+                "locale",
+                "timezone",
+                "dailyMetrics",
+            ),
             keys,
         )
     }

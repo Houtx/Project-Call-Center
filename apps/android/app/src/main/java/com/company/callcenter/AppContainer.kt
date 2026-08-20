@@ -56,6 +56,7 @@ class AppContainer(context: Context) {
         session = session,
         callLogReader = callLogReader,
         callRecorder = callRecorder,
+        callMetricsRecorder = usageTelemetry::recordCall,
     )
 
     val offlineRepository = OfflineRepository(
@@ -64,5 +65,6 @@ class AppContainer(context: Context) {
         access = OfflineAccessStore(appContext),
         callLogReader = callLogReader,
         appModeStore = appModeStore,
+        callMetricsRecorder = usageTelemetry::recordCall,
     )
 }

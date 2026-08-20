@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>外呼运营统计</title>
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body class="login-page">
+  <main class="login-shell">
+    <section class="login-panel" aria-labelledby="login-title">
+      <div class="brand-mark" aria-hidden="true">PC</div>
+      <p class="eyebrow">Project Call Center</p>
+      <h1 id="login-title">外呼运营统计</h1>
+      <p class="muted">管理员登录后可查看已授权统计的活跃安装、版本分布与每日外呼汇总。</p>
+      <p id="login-error" class="form-error"__ERROR_HIDDEN__>账号或密码不正确。</p>
+      <form method="post" action="/login" class="login-form">
+        <label for="username">管理员账号</label>
+        <input id="username" name="username" autocomplete="username" required autofocus>
+        <label for="password">密码</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+        <button type="submit">登录</button>
+      </form>
+    </section>
+  </main>
+</body>
+</html>

@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import androidx.room.withTransaction
+import com.company.callcenter.data.AppMode
 import com.company.callcenter.data.AppModeStore
 import com.company.callcenter.data.CallStatistics
 import com.company.callcenter.data.CallStatisticsRange
@@ -13,6 +14,7 @@ import com.company.callcenter.data.DialSource
 import com.company.callcenter.data.local.CallStatisticsRow
 import com.company.callcenter.offline.importing.PhoneNumberNormalizer
 import com.company.callcenter.telephony.CallLogReader
+import com.company.callcenter.telemetry.CallMetricsRecorder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -37,6 +39,7 @@ class OfflineRepository(
     private val access: OfflineAccessStore,
     private val callLogReader: CallLogReader,
     private val appModeStore: AppModeStore,
+    private val callMetricsRecorder: CallMetricsRecorder = CallMetricsRecorder.NOOP,
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     private val dao = database.dao()
@@ -374,6 +377,13 @@ class OfflineRepository(
                         queueOrder = dao.maximumQueueOrder() + 1,
                     )
                 ) {
+                    callMetricsRecorder.record(
+                        pending.attemptId,
+                        AppMode.OFFLINE,
+                        result.name,
+                        matched?.durationSeconds,
+                        startedAt,
+                    )
                     completed += 1
                 }
             }
