@@ -199,5 +199,5 @@ ADMIN_PASSWORD='...' IMPORT_COUNT=100000 IMPORT_LOAD_TEST_CONFIRM=100000 ./scrip
 - Android `./gradlew test lintDebug assembleDebug`；Release 另需正式签名。
 - 独立模式需覆盖密码限流/自动锁、XLSX/CSV/粘贴导入、全局单 pending、重试上限迁移、临时文件清理、CallLog 迟到和 10/15/30 天清理。
 - 检查 Prisma migration、空数据库部署、管理员 bootstrap 和 `e2e-smoke.sh`。
-- 新 APK 必须使用同一个正式证书，更新 `update-manifest.json`、APK 文件名、SHA-256、`versionCode` 和 `versionName`。
+- 新 APK 必须使用同一个正式证书，更新主仓库 Release 中的 `release.json`、APK 文件名、SHA-256、`versionCode` 和 `versionName`。
 - 发布后在实机上测试更新门禁、服务器切换、权限撤销、CallLog 迟到和杀进程恢复。

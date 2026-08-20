@@ -196,18 +196,17 @@ docker compose --env-file deploy/.env.production -f deploy/compose.production.ya
 
 ### 发布资产
 
-独立 APK Release 仓库只用于发布资产，不放业务源码、生产配置或客户数据。每个版本至少包含：
+APK 与源码统一使用本项目的 GitHub Release。APK 只作为 Release 资产发布，不提交进 Git 历史；Release 中不得包含生产配置、客户数据或签名证书。每个版本至少包含：
 
 - 正式签名 APK
-- `update-manifest.json`
-- `SHA256SUMS.txt`
+- `release.json`
 
 清单中的 `versionCode`、`versionName`、tag、包名、APK 文件名、文件大小和 SHA-256 必须与真实资产完全一致。所有后续 APK 必须沿用同一个签名证书，并对 keystore 做加密离站备份。
 
 ### 发布验收
 
 1. 在干净环境构建 Release，通过单测、lint、APK 包名/版本/签名验证。
-2. 上传资产后，通过 `releases/latest/download/update-manifest.json` 获取清单，再从公开 URL 重新下载 APK 校验 SHA-256。
+2. 上传资产后，通过 `releases/latest/download/release.json` 获取清单，再从公开 URL 重新下载 APK 校验 SHA-256 和文件大小。
 3. 在真机用上一版本验证检查、下载、未知来源授权、系统安装器和更新后登录。
 4. 更新 Web 中的最低/最新 `versionCode` 和 HTTPS 下载地址。当前“强制升级”是全局锁定开关，会阻止包括最新版在内的所有设备；常规发布使用最低版本号门槛并保持该开关关闭。
 5. 保留上一个可用 APK，但不允许用降低版本号的 APK 直接覆盖安装。

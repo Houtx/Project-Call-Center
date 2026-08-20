@@ -244,7 +244,9 @@ apps/android/app/build/outputs/apk/debug/app-debug.apk
 
 Android 模拟器连接本机 API 时使用 `http://10.0.2.2:8800/api/v1/`。真机联调时，手机和电脑必须在同一局域网，并填写电脑的局域网地址，例如 `http://192.168.x.x:8800/api/v1/`。
 
-Release APK 必须使用长期保管的正式签名证书，并显式配置 HTTPS 更新清单和 APK 下载地址。详细要求见 [Android 设备验证](docs/android-device-validation.md) 和 [开发指南](DEVELOPMENT_GUIDE.md)。
+正式 APK 与源码版本统一发布在本仓库的 [GitHub Releases](https://github.com/Houtx/Project-Call-Center/releases)。APK 只作为 Release 资产发布，不提交进 Git 历史；每个版本同时提供 APK 和供 APP 自动更新使用的 `release.json`。
+
+Release APK 必须使用长期保管的正式签名证书，并在构建时将更新清单和下载基地址指向本仓库 Release。详细要求见 [Android 设备验证](docs/android-device-validation.md)、[开发指南](DEVELOPMENT_GUIDE.md) 和 [运维指南](OPERATIONS_GUIDE.md)。
 
 ## 验证代码
 
