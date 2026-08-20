@@ -456,7 +456,7 @@ class TelemetryDatabase:
             "trend": [dict(row) for row in trend_rows],
             "dimensions": dimensions,
             "recent": [dict(row) for row in recent],
-            "notice": "仅统计主动开启匿名使用统计的安装；IP 已脱敏，地区为国家/时区级估算。",
+            "notice": "仅统计当前已启用匿名使用统计的安装；IP 已脱敏，地区为国家/时区级估算。",
         }
 
 

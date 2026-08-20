@@ -246,7 +246,7 @@ Android 模拟器连接本机 API 时使用 `http://10.0.2.2:8800/api/v1/`。真
 
 正式 APK 与源码版本统一发布在本仓库的 [GitHub Releases](https://github.com/Houtx/Project-Call-Center/releases)。APK 只作为 Release 资产发布，不提交进 Git 历史；每个版本同时提供 APK 和 `release.json`。APP 自动更新使用 `https://call.haoyunqiankun.com`，GitHub Release 作为公开下载和备用分发入口。
 
-`call.haoyunqiankun.com` 首页同时提供独立的运营统计管理端。只有用户在 APP 中明确允许后，才会每天最多上报一次匿名活跃、版本、模式、国家/时区和外呼数量汇总。该服务不接收号码、姓名、坐席、SIM、导入文件或逐通记录，IP 仅保留 HMAC 和脱敏网段。
+`call.haoyunqiankun.com` 首页同时提供独立的运营统计管理端。配置统计地址的 APP 默认开启匿名统计，用户可随时关闭；每天最多上报一次匿名活跃、版本、模式、国家/时区和外呼数量汇总。该服务不接收号码、姓名、坐席、SIM、导入文件或逐通记录，IP 仅保留 HMAC 和脱敏网段。
 
 Release APK 必须使用长期保管的正式签名证书，并在构建时将更新清单和下载基地址指向生产更新服务。每次发布先上传完全相同的 APK 和清单到 GitHub Release，再由生产更新服务器直接从该 Release 拉取并校验，无需从本机上传 APK。详细要求见 [Android 更新服务指南](ANDROID_UPDATE_SERVER_GUIDE.md)、[Android 设备验证](docs/android-device-validation.md)、[开发指南](DEVELOPMENT_GUIDE.md) 和 [运维指南](OPERATIONS_GUIDE.md)。
 
@@ -294,7 +294,7 @@ scripts/        端到端与容量测试脚本
 - 手机号使用 AES-256-GCM 加密存储，并使用独立 HMAC 索引去重。
 - 日志和审计只记录脱敏号码；查看完整号码会产生审计事件。
 - APP 只上传由本 APP 发起且能匹配外呼尝试的通话记录。
-- 独立模式的客户与通话数据仅保存在手机本机，不会上传到 CRM；可选匿名使用统计默认关闭且不包含号码、姓名、SIM 或服务器信息。
+- 独立模式的客户与通话数据仅保存在手机本机，不会上传到 CRM；配置统计地址的构建默认开启可随时关闭的匿名使用统计，且不包含号码、姓名、SIM 或服务器信息。
 - 录音按坐席独立开启，使用 AAC 压缩和服务端 AES-256-GCM 加密，播放、下载、清理均记录审计；普通 Android 设备不保证支持蜂窝通话双向录音。
 - 拒呼名单会在导入、分配和拨号三个环节拦截。
 - 使用者必须自行确认所在地关于外呼、个人信息和系统通话记录权限的法律要求。

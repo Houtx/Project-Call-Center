@@ -21,7 +21,7 @@ class UsageTelemetryPolicyTest {
     }
 
     @Test
-    fun `requires explicit consent and a selected mode`() {
+    fun `requires telemetry to be enabled and a mode to be selected`() {
         assertFalse(
             UsageTelemetryPolicy.shouldAttempt(ENDPOINT, false, AppMode.ONLINE, TODAY, null),
         )
@@ -31,6 +31,19 @@ class UsageTelemetryPolicyTest {
         assertTrue(
             UsageTelemetryPolicy.shouldAttempt(ENDPOINT, true, AppMode.OFFLINE, TODAY, null),
         )
+    }
+
+    @Test
+    fun `defaults to enabled only when an endpoint is available and no preference exists`() {
+        assertTrue(UsageTelemetryPolicy.initialEnabled(true, false, false, false))
+        assertFalse(UsageTelemetryPolicy.initialEnabled(false, false, false, false))
+    }
+
+    @Test
+    fun `preserves stored opt out and receiver boundary`() {
+        assertFalse(UsageTelemetryPolicy.initialEnabled(true, true, false, false))
+        assertTrue(UsageTelemetryPolicy.initialEnabled(true, true, true, true))
+        assertFalse(UsageTelemetryPolicy.initialEnabled(true, true, true, false))
     }
 
     @Test

@@ -44,7 +44,7 @@ const sample = {
     country_code: 'CN',
     ip_masked: '203.0.113.*',
   }],
-  notice: '仅统计主动开启匿名使用统计的安装。',
+  notice: '仅统计当前已启用匿名使用统计的安装。',
 };
 
 const styledHtml = html.replace('<link rel="stylesheet" href="/assets/app.css">', `<style>${css}</style>`);

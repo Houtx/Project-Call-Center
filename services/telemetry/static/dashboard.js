@@ -26,7 +26,7 @@ function metric(label, value, note) {
 function renderMetrics(data) {
   const m = data.metrics;
   const values = [
-    ['今日活跃安装', number.format(m.activeToday), '已授权匿名统计'],
+    ['今日活跃安装', number.format(m.activeToday), '已启用匿名统计'],
     [`近 ${data.rangeDays} 天活跃`, number.format(m.activeRange), `观测安装 ${number.format(m.observedInstallations)}`],
     ['外呼总量', number.format(m.callCount), `接通 ${number.format(m.connectedCount)} · 未接 ${number.format(m.notConnectedCount)}`],
     ['接通率', `${(m.connectionRate * 100).toFixed(1)}%`, `未知 ${number.format(m.unknownCount)} 通不计入分母`],
@@ -124,7 +124,7 @@ function renderRecent(rows) {
     const td = document.createElement('td');
     td.colSpan = 7;
     td.className = 'muted';
-    td.textContent = '暂无已授权统计的活跃安装';
+    td.textContent = '暂无已启用统计的活跃安装';
     tr.append(td);
     nodes.push(tr);
   }

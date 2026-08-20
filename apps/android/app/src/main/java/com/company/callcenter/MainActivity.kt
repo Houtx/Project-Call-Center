@@ -23,7 +23,6 @@ import com.company.callcenter.ui.CallCenterTheme
 import com.company.callcenter.ui.OfflineAgentApp
 import com.company.callcenter.ui.OfflineViewModel
 import com.company.callcenter.ui.OfflineViewModelFactory
-import com.company.callcenter.ui.UsageTelemetryConsentDialog
 import com.company.callcenter.data.AppMode
 import com.company.callcenter.data.DialSource
 import com.company.callcenter.data.offline.OfflineDialAccessPolicy
@@ -103,7 +102,6 @@ class MainActivity : ComponentActivity() {
             val startupState = updateState.collectAsStateWithLifecycle().value
             val appMode = appContainer.appModeStore.mode.collectAsStateWithLifecycle().value
             val telemetryEnabled = appContainer.usageTelemetry.enabled.collectAsStateWithLifecycle().value
-            val telemetryConsentRequired = appContainer.usageTelemetry.consentRequired.collectAsStateWithLifecycle().value
             CallCenterTheme {
                 if (startupState == StartupUpdateState.Ready) {
                     val requestCallPermissions = {
@@ -148,12 +146,6 @@ class MainActivity : ComponentActivity() {
                                     appContainer.appModeStore.select(AppMode.ONLINE)
                                 }
                             },
-                        )
-                    }
-                    if (appMode != null && telemetryConsentRequired) {
-                        UsageTelemetryConsentDialog(
-                            onAccept = { appContainer.usageTelemetry.setEnabled(true) },
-                            onDecline = { appContainer.usageTelemetry.setEnabled(false) },
                         )
                     }
                 } else {

@@ -67,15 +67,23 @@ internal object UsageTelemetryPolicy {
 
     fun shouldAttempt(
         endpoint: String,
-        consent: Boolean,
+        enabled: Boolean,
         mode: AppMode?,
         utcDate: String,
         lastAttemptDate: String?,
     ): Boolean = isValidEndpoint(endpoint) &&
-        consent &&
+        enabled &&
         mode != null &&
         utcDate.isNotBlank() &&
         utcDate != lastAttemptDate
+
+    fun initialEnabled(
+        endpointAvailable: Boolean,
+        hasStoredPreference: Boolean,
+        storedEnabled: Boolean,
+        endpointMatches: Boolean,
+    ): Boolean = endpointAvailable &&
+        (!hasStoredPreference || storedEnabled && endpointMatches)
 }
 
 class UsageTelemetry(
@@ -93,29 +101,35 @@ class UsageTelemetry(
             .build()
     }
     private val gson by lazy { Gson() }
-    private val mutableEnabled = MutableStateFlow(
-        isAvailable &&
-            preferences.getBoolean(CONSENT_KEY, false) &&
-            preferences.getString(CONSENT_ENDPOINT_KEY, null) == normalizedEndpoint,
-    )
-    private val mutableConsentRequired = MutableStateFlow(
-        isAvailable && !preferences.contains(CONSENT_KEY),
-    )
+    private val mutableEnabled = MutableStateFlow(loadInitialEnabled())
 
     val enabled: StateFlow<Boolean> = mutableEnabled.asStateFlow()
-    val consentRequired: StateFlow<Boolean> = mutableConsentRequired.asStateFlow()
+
+    private fun loadInitialEnabled(): Boolean {
+        val hasStoredPreference = preferences.contains(ENABLED_KEY)
+        val enabled = UsageTelemetryPolicy.initialEnabled(
+            endpointAvailable = isAvailable,
+            hasStoredPreference = hasStoredPreference,
+            storedEnabled = preferences.getBoolean(ENABLED_KEY, false),
+            endpointMatches = preferences.getString(ENABLED_ENDPOINT_KEY, null) == normalizedEndpoint,
+        )
+        if (!enabled || hasStoredPreference) return enabled
+        return preferences.edit()
+            .putBoolean(ENABLED_KEY, true)
+            .putString(ENABLED_ENDPOINT_KEY, normalizedEndpoint)
+            .commit()
+    }
 
     fun setEnabled(enabled: Boolean) {
         val accepted = isAvailable && enabled
         if (!accepted) mutableEnabled.value = false
         val persisted = preferences.edit()
-            .putBoolean(CONSENT_KEY, accepted)
+            .putBoolean(ENABLED_KEY, accepted)
             .apply {
-                if (accepted) putString(CONSENT_ENDPOINT_KEY, normalizedEndpoint)
-                else remove(CONSENT_ENDPOINT_KEY)
+                if (accepted) putString(ENABLED_ENDPOINT_KEY, normalizedEndpoint)
+                else remove(ENABLED_ENDPOINT_KEY)
             }
             .commit()
-        if (persisted) mutableConsentRequired.value = false
         if (accepted) mutableEnabled.value = persisted
     }
 
@@ -155,7 +169,7 @@ class UsageTelemetry(
             if (
                 !UsageTelemetryPolicy.shouldAttempt(
                     endpoint = normalizedEndpoint,
-                    consent = mutableEnabled.value,
+                    enabled = mutableEnabled.value,
                     mode = mode,
                     utcDate = utcDate,
                     lastAttemptDate = lastAttemptDate,
@@ -218,8 +232,8 @@ class UsageTelemetry(
 
     private companion object {
         const val PREFERENCES_NAME = "usage_telemetry"
-        const val CONSENT_KEY = "consent"
-        const val CONSENT_ENDPOINT_KEY = "consent_endpoint"
+        const val ENABLED_KEY = "consent"
+        const val ENABLED_ENDPOINT_KEY = "consent_endpoint"
         const val ANONYMOUS_ID_KEY = "anonymous_installation_id"
         const val LAST_UPLOAD_DATE_KEY = "last_upload_utc_date"
         const val REQUEST_TIMEOUT_SECONDS = 8L
