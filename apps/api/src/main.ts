@@ -30,7 +30,7 @@ async function bootstrap(): Promise<void> {
   if (process.env.NODE_ENV !== 'production') {
     const options = new DocumentBuilder()
       .setTitle('Project Call Center API')
-      .setVersion('0.6.2')
+      .setVersion('0.6.3')
       .addBearerAuth()
       .build();
     SwaggerModule.setup('api/docs', app, SwaggerModule.createDocument(app, options));

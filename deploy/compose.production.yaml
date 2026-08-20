@@ -31,7 +31,7 @@ x-api-environment: &api-environment
   BULK_ASSIGNMENT_SCAN_MAX_ROWS: ${BULK_ASSIGNMENT_SCAN_MAX_ROWS:-100000}
 
 x-api-service: &api-service
-  image: ${API_IMAGE:-project-call-center-api:0.6.2}
+  image: ${API_IMAGE:-project-call-center-api:0.6.3}
   build:
     context: ..
     dockerfile: apps/api/Dockerfile
@@ -160,7 +160,7 @@ services:
         condition: service_completed_successfully
 
   web:
-    image: ${WEB_IMAGE:-project-call-center-web:0.6.2}
+    image: ${WEB_IMAGE:-project-call-center-web:0.6.3}
     build:
       context: ..
       dockerfile: apps/web/Dockerfile

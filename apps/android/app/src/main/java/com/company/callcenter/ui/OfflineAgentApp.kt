@@ -24,6 +24,7 @@ import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.Call
+import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.ErrorOutline
@@ -40,8 +41,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
-import androidx.compose.material3.DateRangePicker
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -61,6 +62,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -383,30 +385,108 @@ private fun OfflineTaskList(
     viewModel: OfflineViewModel,
 ) {
     var customDateTarget by remember { mutableStateOf<OfflineTaskFilter?>(null) }
+    var customDateField by remember { mutableStateOf<CustomDateField?>(null) }
+    var customStartDateMillis by remember { mutableStateOf<Long?>(null) }
+    var customEndDateMillis by remember { mutableStateOf<Long?>(null) }
     var phoneQuery by remember(state.allTaskFilter.phoneQuery) { mutableStateOf(state.allTaskFilter.phoneQuery) }
-    if (customDateTarget != null) {
-        val pickerState = androidx.compose.material3.rememberDateRangePickerState()
+
+    fun openCustomDateRange(target: OfflineTaskFilter) {
+        customDateTarget = target
+        customStartDateMillis = null
+        customEndDateMillis = null
+        customDateField = CustomDateField.START
+    }
+
+    customDateField?.let { field ->
+        val pickerState = rememberDatePickerState(
+            initialSelectedDateMillis = when (field) {
+                CustomDateField.START -> customStartDateMillis
+                CustomDateField.END -> customEndDateMillis ?: customStartDateMillis
+            },
+        )
         DatePickerDialog(
-            onDismissRequest = { customDateTarget = null },
+            onDismissRequest = {
+                customDateField = null
+                if (customStartDateMillis == null) customDateTarget = null
+            },
             confirmButton = {
                 TextButton(
                     onClick = {
-                        val start = pickerState.selectedStartDateMillis ?: return@TextButton
-                        val end = pickerState.selectedEndDateMillis ?: start
-                        if (customDateTarget == OfflineTaskFilter.ALL) {
-                            viewModel.setCustomAllCreatedDateRange(start, end)
+                        val selected = pickerState.selectedDateMillis ?: return@TextButton
+                        if (field == CustomDateField.START) {
+                            customStartDateMillis = selected
+                            if (customEndDateMillis?.let { it < selected } == true) {
+                                customEndDateMillis = null
+                            }
+                            customDateField = CustomDateField.END
                         } else {
-                            viewModel.setCustomMissedDateRange(start, end)
+                            customEndDateMillis = selected
+                            customDateField = null
+                        }
+                    },
+                    enabled = pickerState.selectedDateMillis != null,
+                ) { Text(if (field == CustomDateField.START) "下一步" else "确定") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        customDateField = null
+                        if (customStartDateMillis == null) customDateTarget = null
+                    },
+                ) { Text("取消") }
+            },
+        ) {
+            DatePicker(
+                state = pickerState,
+                title = {
+                    Text(
+                        if (field == CustomDateField.START) "选择开始日期" else "选择结束日期",
+                        modifier = Modifier.padding(start = 24.dp, top = 16.dp),
+                    )
+                },
+                showModeToggle = false,
+            )
+        }
+    }
+    if (customDateTarget != null && customDateField == null) {
+        val start = customStartDateMillis
+        val end = customEndDateMillis
+        val rangeValid = start != null && end != null && end >= start
+        AlertDialog(
+            onDismissRequest = { customDateTarget = null },
+            title = {
+                Text(if (customDateTarget == OfflineTaskFilter.ALL) "选择创建日期" else "选择未接通日期")
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    CustomDateButton("开始日期", start) { customDateField = CustomDateField.START }
+                    CustomDateButton("结束日期", end) { customDateField = CustomDateField.END }
+                    if (start != null && end != null && end < start) {
+                        Text(
+                            "结束日期不能早于开始日期",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val selectedStart = start ?: return@TextButton
+                        val selectedEnd = end ?: return@TextButton
+                        if (customDateTarget == OfflineTaskFilter.ALL) {
+                            viewModel.setCustomAllCreatedDateRange(selectedStart, selectedEnd)
+                        } else {
+                            viewModel.setCustomMissedDateRange(selectedStart, selectedEnd)
                         }
                         customDateTarget = null
                     },
-                    enabled = pickerState.selectedStartDateMillis != null,
-                ) { Text("确定") }
+                    enabled = rangeValid,
+                ) { Text("应用") }
             },
             dismissButton = { TextButton(onClick = { customDateTarget = null }) { Text("取消") } },
-        ) {
-            DateRangePicker(state = pickerState, modifier = Modifier.fillMaxWidth().height(500.dp))
-        }
+        )
     }
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
@@ -454,7 +534,7 @@ private fun OfflineTaskList(
                         OutlinedButton(
                             onClick = {
                                 if (preset == OfflineMissedDatePreset.CUSTOM) {
-                                    customDateTarget = OfflineTaskFilter.NOT_CONNECTED
+                                    openCustomDateRange(OfflineTaskFilter.NOT_CONNECTED)
                                 }
                                 else viewModel.setMissedDatePreset(preset)
                             },
@@ -482,7 +562,7 @@ private fun OfflineTaskList(
                     onImportBatchChange = viewModel::setAllImportBatch,
                     onDatePresetChange = { preset ->
                         if (preset == OfflineMissedDatePreset.CUSTOM) {
-                            customDateTarget = OfflineTaskFilter.ALL
+                            openCustomDateRange(OfflineTaskFilter.ALL)
                         } else {
                             viewModel.setAllCreatedDatePreset(preset)
                         }
@@ -600,10 +680,13 @@ private fun AllTaskFilters(
                 }
             }
             if (state.allTaskFilter.createdDateFilter.preset != OfflineMissedDatePreset.ALL) {
-                Text(
-                    createdDateFilterLabel(state.allTaskFilter.createdDateFilter),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                SelectedDateRange(
+                    title = if (state.allTaskFilter.createdDateFilter.preset == OfflineMissedDatePreset.THIS_WEEK) {
+                        "本周导入"
+                    } else {
+                        "已选创建日期"
+                    },
+                    filter = state.allTaskFilter.createdDateFilter,
                 )
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -611,6 +694,36 @@ private fun AllTaskFilters(
                 Button(onClick = onSearch, modifier = Modifier.weight(1f)) { Text("查询") }
             }
         }
+    }
+}
+
+private enum class CustomDateField { START, END }
+
+@Composable
+private fun CustomDateButton(label: String, value: Long?, onClick: () -> Unit) {
+    OutlinedButton(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+        Icon(Icons.Outlined.CalendarMonth, contentDescription = null)
+        Column(
+            modifier = Modifier.weight(1f).padding(start = 12.dp),
+            horizontalAlignment = Alignment.Start,
+        ) {
+            Text(label, style = MaterialTheme.typography.bodySmall)
+            Text(value?.let(::offlineFormatDate) ?: "请选择", style = MaterialTheme.typography.bodyLarge)
+        }
+    }
+}
+
+@Composable
+private fun SelectedDateRange(
+    title: String,
+    filter: com.company.callcenter.data.offline.OfflineMissedDateFilter,
+) {
+    val start = filter.startMillis?.let(::offlineFormatDate).orEmpty()
+    val end = filter.endExclusiveMillis?.minus(1)?.let(::offlineFormatDate).orEmpty()
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(title, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("开始：$start", style = MaterialTheme.typography.bodySmall)
+        Text("结束：$end", style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -861,16 +974,6 @@ private fun missedDateFilterLabel(filter: com.company.callcenter.data.offline.Of
     return when (filter.preset) {
         OfflineMissedDatePreset.THIS_WEEK -> "本周未接通：$start 至 $end"
         OfflineMissedDatePreset.CUSTOM -> "筛选范围：$start 至 $end"
-        OfflineMissedDatePreset.ALL -> ""
-    }
-}
-
-private fun createdDateFilterLabel(filter: com.company.callcenter.data.offline.OfflineMissedDateFilter): String {
-    val start = filter.startMillis?.let(::offlineFormatDate).orEmpty()
-    val end = filter.endExclusiveMillis?.minus(1)?.let(::offlineFormatDate).orEmpty()
-    return when (filter.preset) {
-        OfflineMissedDatePreset.THIS_WEEK -> "本周导入：$start 至 $end"
-        OfflineMissedDatePreset.CUSTOM -> "创建日期：$start 至 $end"
         OfflineMissedDatePreset.ALL -> ""
     }
 }
