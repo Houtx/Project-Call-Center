@@ -18,7 +18,7 @@ export class HealthController {
       status: 'ok',
       database: 'up',
       timestamp: new Date().toISOString(),
-      version: process.env.npm_package_version ?? '0.6.4',
+      version: process.env.npm_package_version ?? '0.6.5',
       backgroundJobs: this.backgroundJobs.status(),
     };
   }
