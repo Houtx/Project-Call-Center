@@ -34,6 +34,8 @@ VERSION_PATTERN = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,31}$")
 LOCALE_PATTERN = re.compile(r"^[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8}){0,2}$")
 TIMEZONE_PATTERN = re.compile(r"^[A-Za-z0-9_+./:-]{1,64}$")
 COUNTRY_PATTERN = re.compile(r"^[A-Z]{2}$")
+LEGACY_PAYLOAD_KEYS = frozenset({"a", "b", "c", "d", "e", "f", "g"})
+LEGACY_METRIC_KEYS = LEGACY_PAYLOAD_KEYS
 
 
 def utc_now() -> dt.datetime:
@@ -67,9 +69,52 @@ def optional_text(value: Any, field: str, pattern: re.Pattern[str], fallback: st
     return value
 
 
+def normalize_legacy_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Translate the minified 0.6.7 release payload without accepting arbitrary keys.
+
+    R8 removed the compile-time appVersion field and renamed the remaining Gson
+    fields to a-g. The field order is stable in the release mapping, so this
+    narrowly scoped translation preserves telemetry from already-installed APKs.
+    """
+    if set(payload) != LEGACY_PAYLOAD_KEYS:
+        return payload
+
+    metrics = payload.get("g")
+    if isinstance(metrics, list):
+        normalized_metrics: list[Any] = []
+        for item in metrics:
+            if isinstance(item, dict) and set(item) == LEGACY_METRIC_KEYS:
+                normalized_metrics.append(
+                    {
+                        "date": item.get("a"),
+                        "mode": item.get("b"),
+                        "callCount": item.get("c"),
+                        "connectedCount": item.get("d"),
+                        "notConnectedCount": item.get("e"),
+                        "unknownCount": item.get("f"),
+                        "totalDurationSeconds": item.get("g"),
+                    }
+                )
+            else:
+                normalized_metrics.append(item)
+        metrics = normalized_metrics
+
+    return {
+        "anonymousId": payload.get("a"),
+        "date": payload.get("b"),
+        "appVersion": "legacy",
+        "androidApi": payload.get("c"),
+        "mode": payload.get("d"),
+        "locale": payload.get("e"),
+        "timezone": payload.get("f"),
+        "dailyMetrics": metrics,
+    }
+
+
 def validate_payload(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("request body must be an object")
+    payload = normalize_legacy_payload(payload)
     allowed = {
         "anonymousId",
         "date",
@@ -80,8 +125,11 @@ def validate_payload(payload: Any) -> dict[str, Any]:
         "timezone",
         "dailyMetrics",
     }
-    if set(payload) - allowed:
-        raise ValueError("request contains unsupported fields")
+    unsupported = sorted(set(payload) - allowed)
+    if unsupported:
+        raise ValueError(
+            "request contains unsupported fields: " + ",".join(unsupported)
+        )
     anonymous_id = payload.get("anonymousId")
     if not isinstance(anonymous_id, str) or not IDENTIFIER_PATTERN.fullmatch(anonymous_id):
         raise ValueError("anonymousId is invalid")
@@ -751,6 +799,7 @@ class TelemetryHandler(BaseHTTPRequestHandler):
             country = self.headers.get("X-Country-Code", "ZZ").upper().strip()
             self.app.database.ingest(payload, self.client_ip(), country)
         except (ValueError, json.JSONDecodeError) as error:
+            self.log_message("Rejected telemetry payload: %s", error)
             self.json_response(HTTPStatus.BAD_REQUEST, {"message": str(error)})
             return
         self.json_response(HTTPStatus.ACCEPTED, {"accepted": True})

@@ -54,9 +54,31 @@ class TelemetryServerTest(unittest.TestCase):
         self.assertEqual("2001:db8:abcd::/48", masked_ip("2001:db8:abcd:12::5"))
         self.assertEqual("unknown", masked_ip("not-an-ip"))
 
-    def test_payload_rejects_sensitive_or_inconsistent_fields(self) -> None:
+    def test_payload_accepts_legacy_release_and_rejects_invalid_fields(self) -> None:
         valid = payload()
         self.assertEqual(4, validate_payload(valid)["dailyMetrics"][0]["callCount"])
+        legacy = {
+            "a": valid["anonymousId"],
+            "b": valid["date"],
+            "c": valid["androidApi"],
+            "d": valid["mode"],
+            "e": valid["locale"],
+            "f": valid["timezone"],
+            "g": [
+                {
+                    "a": valid["dailyMetrics"][0]["date"],
+                    "b": valid["dailyMetrics"][0]["mode"],
+                    "c": valid["dailyMetrics"][0]["callCount"],
+                    "d": valid["dailyMetrics"][0]["connectedCount"],
+                    "e": valid["dailyMetrics"][0]["notConnectedCount"],
+                    "f": valid["dailyMetrics"][0]["unknownCount"],
+                    "g": valid["dailyMetrics"][0]["totalDurationSeconds"],
+                }
+            ],
+        }
+        normalized_legacy = validate_payload(legacy)
+        self.assertEqual("legacy", normalized_legacy["appVersion"])
+        self.assertEqual(4, normalized_legacy["dailyMetrics"][0]["callCount"])
         valid["phone"] = "13800138000"
         with self.assertRaisesRegex(ValueError, "unsupported fields"):
             validate_payload(valid)
