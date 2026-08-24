@@ -652,10 +652,10 @@ export function CustomersPage() {
               <Button icon={<Download size={16} />} onClick={downloadImportTemplate}>下载 Excel 模板</Button>
             </div>
           </div>
-          <Upload.Dragger accept=".xlsx,.csv" maxCount={1} showUploadList={false} beforeUpload={previewUpload} disabled={importing || !importBatchId}>
+          <Upload.Dragger accept=".xlsx,.xls,.csv" maxCount={1} showUploadList={false} beforeUpload={previewUpload} disabled={importing || !importBatchId}>
             <p className="ant-upload-drag-icon"><FileSpreadsheet size={42} /></p>
             <p className="ant-upload-text">{importing ? '正在分析文件…' : '点击或将 Excel / CSV 拖到此处'}</p>
-            <p className="ant-upload-hint">文件必须且只能包含“姓名”和“手机号”两列；单次行数上限由服务器配置。</p>
+            <p className="ant-upload-hint">支持 .xlsx、.xls 和 .csv；文件必须且只能包含“姓名”和“手机号”两列。</p>
           </Upload.Dragger>
         </div> : <div className="import-preview">
           <div className="import-summary"><div><span>文件</span><strong>{preview.fileName}</strong></div><div><span>导入批次</span><strong>{preview.batchName}</strong></div><div><span>总行数</span><strong>{preview.total}</strong></div><div className="good"><span>可新增</span><strong>{preview.newCount}</strong></div><div><span>重复</span><strong>{preview.duplicateCount}</strong></div><div className="bad"><span>无效 / 拒呼</span><strong>{preview.invalidCount + preview.suppressedCount}</strong></div></div>

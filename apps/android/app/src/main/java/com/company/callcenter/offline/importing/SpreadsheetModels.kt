@@ -4,6 +4,7 @@ import java.io.IOException
 
 enum class SpreadsheetFormat {
     XLSX,
+    XLS,
     CSV,
     TSV,
 }

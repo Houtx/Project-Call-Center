@@ -506,7 +506,7 @@ private fun OfflineTaskList(
         item {
             AutoDialBanner(
                 state = state.autoDial,
-                canEnable = permissionsGranted && state.simDial.availableSims.isNotEmpty() && !state.loading,
+                canEnable = permissionsGranted && state.simDial.canDial && !state.loading,
                 onEnabledChange = viewModel::setAutoDialEnabled,
             )
         }
@@ -593,7 +593,8 @@ private fun OfflineTaskList(
             }
         }
         if (!permissionsGranted) item { OfflinePermissionBanner(requestPermissions) }
-        else if (state.simDial.availableSims.isEmpty()) item { OfflineMissingSimBanner() }
+        else if (!state.simDial.canDial) item { OfflineMissingSimBanner() }
+        else if (state.simDial.systemManagedRouting) item { OfflineSystemManagedSimBanner() }
         if (state.taskContacts.isEmpty()) {
             item { OfflineEmptyState("暂无符合条件的数据", "可在“导入”中添加手机号") }
         }
@@ -603,7 +604,7 @@ private fun OfflineTaskList(
                 maximumAttempts = state.maximumAttempts,
                 interactionEnabled = !state.autoDial.enabled,
                 callEnabled = !state.autoDial.enabled && !state.loading && permissionsGranted &&
-                    state.simDial.availableSims.isNotEmpty() &&
+                    state.simDial.canDial &&
                     !state.hasPendingCall && contact.state != OfflineContactState.CONNECTED &&
                     contact.state != OfflineContactState.COLLECTING && contact.attemptCount < state.maximumAttempts,
                 onReveal = { viewModel.revealPhone(contact.id) },
@@ -967,6 +968,16 @@ private fun OfflinePermissionBanner(onGrant: () -> Unit) {
 private fun OfflineMissingSimBanner() {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
         Text("未检测到可拨号的 SIM 卡", modifier = Modifier.fillMaxWidth().padding(14.dp))
+    }
+}
+
+@Composable
+private fun OfflineSystemManagedSimBanner() {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+        Text(
+            "SIM 由系统电话服务管理，拨号时将使用系统设置的默认卡",
+            modifier = Modifier.fillMaxWidth().padding(14.dp),
+        )
     }
 }
 

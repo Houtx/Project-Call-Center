@@ -745,7 +745,7 @@ class OfflineViewModel(
             !repository.unlocked.value -> "离线数据已锁定"
             operationInProgress.get() -> "正在处理其他操作，自动拨号已暂停"
             latestHasPendingCall -> "正在等待上一通结束并采集结果"
-            simCallManager.state.value.availableSims.isEmpty() -> "未检测到可拨号的 SIM 卡"
+            !simCallManager.state.value.canDial -> "未检测到可用的 SIM 卡或系统电话服务"
             latestTaskContacts.none { contact ->
                 OfflineCallPolicy.canCall(contact.state, contact.attemptCount, repository.maximumAttempts.value)
             } -> "当前筛选中暂无可外呼任务"

@@ -13,6 +13,7 @@ import {
   Prisma,
 } from '@prisma/client';
 import { parse } from 'csv-parse/sync';
+import * as XLSX from '@e965/xlsx';
 import * as ExcelJS from 'exceljs';
 import { posix } from 'node:path';
 import { Readable } from 'node:stream';
@@ -456,7 +457,36 @@ export class ImportsService {
         });
       }
     }
-    throw new BadRequestException({ code: 'IMPORT_FILE_TYPE', detail: '仅支持 .csv 和 .xlsx' });
+    if (extension === 'xls') {
+      try {
+        const workbook = XLSX.read(file.buffer, {
+          type: 'buffer',
+          dense: true,
+          cellDates: true,
+          cellFormula: false,
+          cellHTML: false,
+          bookVBA: false,
+          WTF: false,
+        });
+        const firstSheetName = workbook.SheetNames[0];
+        if (!firstSheetName) return [];
+        const worksheet = workbook.Sheets[firstSheetName];
+        const matrix = XLSX.utils.sheet_to_json<Cell[]>(worksheet, {
+          header: 1,
+          raw: true,
+          defval: null,
+          blankrows: false,
+        });
+        return this.parseMatrix(matrix, maxRows);
+      } catch (error) {
+        if (error instanceof BadRequestException) throw error;
+        throw new BadRequestException({
+          code: 'IMPORT_FILE_INVALID',
+          detail: '旧版 Excel 文件损坏、已加密或格式不受支持',
+        });
+      }
+    }
+    throw new BadRequestException({ code: 'IMPORT_FILE_TYPE', detail: '仅支持 .csv、.xlsx 和 .xls' });
   }
 
   private parseMatrix(matrix: Cell[][], maxRows: number): ParsedImportRow[] {

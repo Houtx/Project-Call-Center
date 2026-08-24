@@ -149,7 +149,7 @@ class CsvSpreadsheetReaderTest {
     }
 
     @Test
-    fun `rejects binary and encrypted OLE input`() {
+    fun `rejects binary and malformed OLE input`() {
         val binary = temporaryFolder.newFile("binary.csv").apply {
             writeBytes(byteArrayOf(1, 0, 2, 3, 4))
         }
@@ -161,7 +161,7 @@ class CsvSpreadsheetReaderTest {
                 0xa1.toByte(), 0xb1.toByte(), 0x1a, 0xe1.toByte(),
             ))
         }
-        assertReason(SpreadsheetFailureReason.ENCRYPTED_FILE) { reader.preview(ole) }
+        assertReason(SpreadsheetFailureReason.CORRUPT_FILE) { reader.preview(ole) }
     }
 
     private fun assertReason(reason: SpreadsheetFailureReason, block: () -> Unit) {

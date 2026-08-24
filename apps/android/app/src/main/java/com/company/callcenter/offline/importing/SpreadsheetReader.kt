@@ -11,13 +11,10 @@ class SpreadsheetReader {
         when (detectContainer(file)) {
             ContainerKind.XLSX -> XlsxSpreadsheetParser(file).preview()
             ContainerKind.TEXT -> CsvSpreadsheetParser(file).preview()
-            ContainerKind.OLE -> throw SpreadsheetReadException(
-                SpreadsheetFailureReason.ENCRYPTED_FILE,
-                "不支持加密的 Excel 文件或旧版 .xls 文件",
-            )
+            ContainerKind.OLE -> XlsSpreadsheetParser(file).preview()
             ContainerKind.UNKNOWN -> throw SpreadsheetReadException(
                 SpreadsheetFailureReason.UNSUPPORTED_FORMAT,
-                "仅支持 .xlsx、.xlsm、.csv 和 .tsv 文件",
+                "仅支持 .xlsx、.xlsm、.xls、.csv 和 .tsv 文件",
             )
         }
     }
@@ -67,13 +64,18 @@ class SpreadsheetReader {
                 limit,
                 onRowRead,
             )
-            ContainerKind.OLE -> throw SpreadsheetReadException(
-                SpreadsheetFailureReason.ENCRYPTED_FILE,
-                "不支持加密的 Excel 文件或旧版 .xls 文件",
+            ContainerKind.OLE -> XlsSpreadsheetParser(file).readColumn(
+                sheetId,
+                columnIndex,
+                skipHeader,
+                startRow,
+                endRowInclusive,
+                limit,
+                onRowRead,
             )
             ContainerKind.UNKNOWN -> throw SpreadsheetReadException(
                 SpreadsheetFailureReason.UNSUPPORTED_FORMAT,
-                "仅支持 .xlsx、.xlsm、.csv 和 .tsv 文件",
+                "仅支持 .xlsx、.xlsm、.xls、.csv 和 .tsv 文件",
             )
         }
     }

@@ -20,6 +20,7 @@
     "prisma:seed": "tsx --env-file=.env prisma/seed.ts"
   },
   "dependencies": {
+    "@e965/xlsx": "^0.20.3",
     "@nestjs/common": "^11.1.6",
     "@nestjs/config": "^4.0.2",
     "@nestjs/core": "^11.1.6",

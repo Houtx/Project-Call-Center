@@ -7,9 +7,13 @@ internal class PreviewAccumulator(
     private val seenColumns = linkedSetOf<Int>()
     private val previewRows = mutableListOf<Pair<Int, List<String>>>()
     private var rows = 0
+    private var lastRowNumber = 0
 
-    fun accept(values: List<String>) {
+    fun accept(values: List<String>) = accept(rows + 1, values)
+
+    fun accept(rowNumber: Int, values: List<String>) {
         rows += 1
+        lastRowNumber = maxOf(lastRowNumber, rowNumber)
         if (rows > ImportLimits.MAX_ROWS) {
             throw limitExceeded("工作表最多支持 ${ImportLimits.MAX_ROWS} 行")
         }
@@ -44,7 +48,7 @@ internal class PreviewAccumulator(
                 sampledValueCount = sampled.size,
             )
         }
-        return SpreadsheetSheetPreview(sheetId, sheetName, rows, rows, columns)
+        return SpreadsheetSheetPreview(sheetId, sheetName, rows, lastRowNumber, columns)
     }
 }
 

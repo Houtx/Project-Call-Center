@@ -97,8 +97,8 @@ android {
         applicationId = "com.company.callcenter"
         minSdk = 31
         targetSdk = 35
-        versionCode = 13
-        versionName = "0.6.7"
+        versionCode = 14
+        versionName = "0.6.8"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -183,6 +183,9 @@ dependencies {
     implementation("com.squareup.retrofit2:retrofit:2.11.0")
     implementation("com.squareup.retrofit2:converter-gson:2.11.0")
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
+    implementation("net.sourceforge.jexcelapi:jxl:2.6.12") {
+        exclude(group = "log4j", module = "log4j")
+    }
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")

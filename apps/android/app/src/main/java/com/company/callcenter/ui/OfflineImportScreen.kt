@@ -184,7 +184,7 @@ private fun SpreadsheetPicker(onPick: () -> Unit) {
     Icon(Icons.Outlined.Description, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
     Text("从手机选择表格", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
     Text(
-        "支持 .xlsx、.xlsm、.csv 和 .tsv。有无标题都可以，可包含多张表和任意列，选择后只需指定号码列。",
+        "支持 .xlsx、.xlsm、.xls、.csv 和 .tsv。有无标题都可以，可包含多张表和任意列，选择后只需指定号码列。",
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
     Button(onClick = onPick, modifier = Modifier.fillMaxWidth()) {

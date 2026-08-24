@@ -390,7 +390,7 @@ class AgentViewModel(
             !repository.isLoggedIn -> "登录已失效，自动拨号已暂停"
             operationInProgress.get() -> "正在处理其他操作，自动拨号已暂停"
             latestHasPendingCall -> "正在等待上一通结束并采集结果"
-            simCallManager.state.value.availableSims.isEmpty() -> "未检测到可拨号的 SIM 卡"
+            !simCallManager.state.value.canDial -> "未检测到可用的 SIM 卡或系统电话服务"
             latestAssignments.none { assignment ->
                 assignment.attemptCount < latestMaxCallAttempts &&
                     (assignment.nextCallAllowedAt == null || assignment.nextCallAllowedAt <= now)

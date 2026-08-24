@@ -1,7 +1,9 @@
 package com.company.callcenter.telephony
 
 import android.Manifest
+import android.content.ActivityNotFoundException
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
@@ -27,7 +29,11 @@ data class AvailableSim(
 data class SimDialState(
     val mode: SimDialMode = SimDialMode.SIM_1,
     val availableSims: List<AvailableSim> = emptyList(),
-)
+    val systemManagedRouting: Boolean = false,
+) {
+    val canDial: Boolean
+        get() = availableSims.isNotEmpty() || systemManagedRouting
+}
 
 class SimCallManager(context: Context) {
     private val appContext = context.applicationContext
@@ -46,7 +52,11 @@ class SimCallManager(context: Context) {
     }
 
     fun refresh() {
-        mutableState.value = mutableState.value.copy(availableSims = readRoutedSims().map { it.sim })
+        val routedSims = readRoutedSims()
+        mutableState.value = mutableState.value.copy(
+            availableSims = routedSims.map { it.sim },
+            systemManagedRouting = routedSims.isEmpty() && canUseSystemManagedDialing(),
+        )
     }
 
     fun setMode(mode: SimDialMode) {
@@ -56,15 +66,34 @@ class SimCallManager(context: Context) {
 
     fun requireAvailableSim() {
         refresh()
-        check(mutableState.value.availableSims.isNotEmpty()) {
-            "未检测到可用于拨号的 SIM 卡"
+        check(mutableState.value.canDial) {
+            "未检测到可用的 SIM 卡或系统电话服务"
         }
     }
 
     fun placeCall(phone: String) {
         check(hasPermission(Manifest.permission.CALL_PHONE)) { "外呼权限未就绪" }
         val routedSims = readRoutedSims()
-        mutableState.value = mutableState.value.copy(availableSims = routedSims.map { it.sim })
+        val systemManagedRouting = routedSims.isEmpty() && canUseSystemManagedDialing()
+        mutableState.value = mutableState.value.copy(
+            availableSims = routedSims.map { it.sim },
+            systemManagedRouting = systemManagedRouting,
+        )
+
+        val callUri = Uri.fromParts("tel", phone, null)
+        if (routedSims.isEmpty()) {
+            check(systemManagedRouting) { "未检测到可用的 SIM 卡或系统电话服务" }
+            try {
+                appContext.startActivity(
+                    Intent(Intent.ACTION_CALL, callUri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            } catch (failure: SecurityException) {
+                throw IllegalStateException("外呼权限已被撤销，请重新授权", failure)
+            } catch (failure: ActivityNotFoundException) {
+                throw IllegalStateException("系统电话服务不可用", failure)
+            }
+            return
+        }
 
         val nextSlot = preferences.getInt(NEXT_ALTERNATE_SLOT_KEY, 0)
         val decision = SimRoutingPolicy.select(
@@ -77,7 +106,7 @@ class SimCallManager(context: Context) {
             putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, routedSim.phoneAccountHandle)
         }
         try {
-            telecomManager.placeCall(Uri.parse("tel:${Uri.encode(phone)}"), extras)
+            telecomManager.placeCall(callUri, extras)
         } catch (failure: SecurityException) {
             throw IllegalStateException("外呼权限已被撤销，请重新授权", failure)
         }
@@ -144,6 +173,16 @@ class SimCallManager(context: Context) {
 
     private fun hasPermission(permission: String): Boolean =
         ContextCompat.checkSelfPermission(appContext, permission) == PackageManager.PERMISSION_GRANTED
+
+    private fun canUseSystemManagedDialing(): Boolean {
+        if (!hasPermission(Manifest.permission.CALL_PHONE)) return false
+        val packageManager = appContext.packageManager
+        val hasCallingFeature = packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY_CALLING) ||
+            packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY)
+        val callHandlerAvailable = Intent(Intent.ACTION_CALL, Uri.parse("tel:10086"))
+            .resolveActivity(packageManager) != null
+        return hasCallingFeature || callHandlerAvailable
+    }
 
     private data class RoutedSim(
         val sim: AvailableSim,

@@ -1,4 +1,5 @@
 import * as ExcelJS from 'exceljs';
+import * as XLSX from '@e965/xlsx';
 import { DuplicateModeDto } from './imports.dto';
 import { ImportsService } from './imports.service';
 
@@ -41,6 +42,28 @@ describe('ImportsService file parsing', () => {
     expect(rows[0]).toMatchObject({ name: 'Li', phone: '13800000002' });
   });
 
+  it('reads a legacy binary Excel sheet', async () => {
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.aoa_to_sheet([
+        ['姓名', '手机号'],
+        ['张三', 13800000003],
+      ]),
+      '客户',
+    );
+    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xls' });
+    const rows = await (service as any).parseFile({
+      originalname: 'customers.xls',
+      buffer,
+    });
+    expect(rows).toEqual([expect.objectContaining({
+      rowNumber: 2,
+      name: '张三',
+      phone: '13800000003',
+    })]);
+  });
+
   it.each([
     ['CSV', 'customers.csv', async () => Buffer.from('姓名,手机号\n甲,13800000001\n乙,13800000002\n丙,13800000003\n')],
     ['Excel', 'customers.xlsx', async () => {
@@ -52,6 +75,16 @@ describe('ImportsService file parsing', () => {
         ['丙', '13800000003'],
       ]);
       return Buffer.from(await workbook.xlsx.writeBuffer());
+    }],
+    ['legacy Excel', 'customers.xls', async () => {
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
+        ['姓名', '手机号'],
+        ['甲', 13800000001],
+        ['乙', 13800000002],
+        ['丙', 13800000003],
+      ]), 'Customers');
+      return XLSX.write(workbook, { type: 'buffer', bookType: 'xls' });
     }],
   ])('stops oversized %s imports at the configured row limit', async (_type, originalname, createBuffer) => {
     const previous = process.env.IMPORT_MAX_ROWS;

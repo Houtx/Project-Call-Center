@@ -312,7 +312,7 @@ private fun TaskList(
         item {
             AutoDialBanner(
                 state = state.autoDial,
-                canEnable = permissionsGranted && state.simDial.availableSims.isNotEmpty() && !state.loading,
+                canEnable = permissionsGranted && state.simDial.canDial && !state.loading,
                 onEnabledChange = viewModel::setAutoDialEnabled,
             )
         }
@@ -320,8 +320,10 @@ private fun TaskList(
             item {
                 PermissionBanner(requestPermissions)
             }
-        } else if (state.simDial.availableSims.isEmpty()) {
+        } else if (!state.simDial.canDial) {
             item { MissingSimBanner() }
+        } else if (state.simDial.systemManagedRouting) {
+            item { SystemManagedSimBanner() }
         }
         if (state.assignments.isEmpty()) {
             item {
@@ -333,7 +335,7 @@ private fun TaskList(
                 assignment = assignment,
                 maxCallAttempts = state.maxCallAttempts,
                 interactionEnabled = !state.autoDial.enabled,
-                callEnabled = !state.autoDial.enabled && permissionsGranted && state.simDial.availableSims.isNotEmpty() &&
+                callEnabled = !state.autoDial.enabled && permissionsGranted && state.simDial.canDial &&
                     !state.hasPendingCall,
                 onReveal = { viewModel.revealPhone(assignment.assignmentId) },
                 onCall = { viewModel.call(assignment.assignmentId) },
@@ -354,6 +356,22 @@ private fun MissingSimBanner() {
             Column(Modifier.padding(start = 12.dp)) {
                 Text("未检测到可用 SIM", fontWeight = FontWeight.SemiBold)
                 Text("请插入并启用可拨号的 SIM 卡", style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SystemManagedSimBanner() {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+        shape = RoundedCornerShape(8.dp),
+    ) {
+        Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Outlined.SimCard, null)
+            Column(Modifier.padding(start = 12.dp)) {
+                Text("SIM 由系统管理", fontWeight = FontWeight.SemiBold)
+                Text("拨号时由系统电话服务选择可用 SIM", style = MaterialTheme.typography.bodySmall)
             }
         }
     }
@@ -541,6 +559,14 @@ fun SimDialSettings(
             )
         }
         when {
+            state.systemManagedRouting -> {
+                Text("兼容模式 · SIM 选择由系统电话服务管理")
+                Text(
+                    "固定卡和循环设置不可用；可在系统电话设置中指定默认拨号卡。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             state.availableSims.isEmpty() -> {
                 Text("未检测到可用于拨号的 SIM 卡", color = MaterialTheme.colorScheme.error)
             }

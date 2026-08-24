@@ -18,6 +18,8 @@ class SimRoutingPolicyTest {
     @Test
     fun `returns no route when no SIM is available`() {
         assertNull(SimRoutingPolicy.select(SimDialMode.SIM_1, emptyList(), 0))
+        assertEquals(false, SimDialState().canDial)
+        assertEquals(true, SimDialState(systemManagedRouting = true).canDial)
     }
 
     @Test
