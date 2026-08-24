@@ -20,6 +20,7 @@
         <option value="365">近 365 天</option>
       </select>
       <button id="refresh" type="button">刷新数据</button>
+      <button id="apk-open" class="secondary" type="button">下载最新 APK</button>
       <button id="password-open" class="secondary" type="button">修改密码</button>
       <form method="post" action="/logout">
         <input type="hidden" name="csrf" value="__CSRF_TOKEN__">
@@ -76,6 +77,40 @@
       </div>
     </form>
   </dialog>
+  <dialog id="apk-dialog" aria-labelledby="apk-title">
+    <div class="apk-dialog-panel">
+      <h2 id="apk-title">下载最新 APK</h2>
+      <div id="apk-loading" class="dialog-loading" role="status">
+        <span class="spinner"></span>
+        <strong>正在读取最新版本</strong>
+      </div>
+      <div id="apk-content" hidden>
+        <div class="apk-layout">
+          <div id="apk-qr" class="apk-qr"></div>
+          <dl class="apk-details">
+            <dt>最新版本</dt>
+            <dd id="apk-version"></dd>
+            <dt>安装包</dt>
+            <dd id="apk-filename"></dd>
+            <dt>文件大小</dt>
+            <dd id="apk-size"></dd>
+          </dl>
+        </div>
+        <div class="dialog-actions">
+          <button class="secondary apk-close" type="button">关闭</button>
+          <a id="apk-download" class="button-link" href="/" download>下载 APK</a>
+        </div>
+      </div>
+      <div id="apk-error" hidden>
+        <p id="apk-error-message" class="form-error" aria-live="polite"></p>
+        <div class="dialog-actions">
+          <button class="secondary apk-close" type="button">关闭</button>
+          <button id="apk-retry" type="button">重新加载</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+  <script src="/assets/qrcode.js" defer></script>
   <script src="/assets/dashboard.js" defer></script>
 </body>
 </html>

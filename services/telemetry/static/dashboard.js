@@ -161,6 +161,117 @@ async function load() {
   }
 }
 
+const releaseTagPattern = /^v[0-9A-Za-z][0-9A-Za-z._+-]{0,31}$/;
+const packageNamePattern = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/;
+const apkAssetPattern = /^[0-9A-Za-z][0-9A-Za-z._+-]{0,191}\.apk$/i;
+
+function parseReleaseManifest(value) {
+  if (
+    !value ||
+    value.schemaVersion !== 1 ||
+    !Number.isSafeInteger(value.versionCode) ||
+    value.versionCode < 1 ||
+    typeof value.versionName !== 'string' ||
+    !/^[0-9A-Za-z][0-9A-Za-z._+-]{0,31}$/.test(value.versionName) ||
+    typeof value.releaseTag !== 'string' ||
+    !releaseTagPattern.test(value.releaseTag) ||
+    typeof value.packageName !== 'string' ||
+    !packageNamePattern.test(value.packageName) ||
+    typeof value.apkAsset !== 'string' ||
+    !apkAssetPattern.test(value.apkAsset) ||
+    typeof value.sha256 !== 'string' ||
+    !/^[0-9a-f]{64}$/i.test(value.sha256) ||
+    !Number.isSafeInteger(value.sizeBytes) ||
+    value.sizeBytes < 1 ||
+    value.sizeBytes > 500 * 1024 * 1024
+  ) {
+    throw new Error('最新版本清单内容无效');
+  }
+  const path = `/releases/${encodeURIComponent(value.releaseTag)}/${encodeURIComponent(value.apkAsset)}`;
+  const downloadUrl = new URL(path, location.origin);
+  if (downloadUrl.origin !== location.origin || !downloadUrl.pathname.endsWith('.apk')) {
+    throw new Error('安装包下载地址无效');
+  }
+  return { ...value, downloadUrl: downloadUrl.href };
+}
+
+function renderDownloadQr(downloadUrl) {
+  if (typeof globalThis.qrcode !== 'function') throw new Error('二维码组件加载失败');
+  const code = globalThis.qrcode(0, 'M');
+  code.addData(downloadUrl);
+  code.make();
+  const quietZone = 4;
+  const moduleCount = code.getModuleCount();
+  const size = moduleCount + quietZone * 2;
+  const svgNamespace = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(svgNamespace, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${size} ${size}`);
+  svg.setAttribute('role', 'img');
+  svg.setAttribute('aria-label', '最新 APK 下载二维码');
+  svg.setAttribute('shape-rendering', 'crispEdges');
+  const title = document.createElementNS(svgNamespace, 'title');
+  title.textContent = '最新 APK 下载二维码';
+  const background = document.createElementNS(svgNamespace, 'rect');
+  background.setAttribute('width', String(size));
+  background.setAttribute('height', String(size));
+  background.setAttribute('fill', '#fff');
+  const modules = document.createElementNS(svgNamespace, 'path');
+  const path = [];
+  for (let row = 0; row < moduleCount; row += 1) {
+    for (let column = 0; column < moduleCount; column += 1) {
+      if (code.isDark(row, column)) path.push(`M${column + quietZone} ${row + quietZone}h1v1h-1z`);
+    }
+  }
+  modules.setAttribute('d', path.join(''));
+  modules.setAttribute('fill', '#111');
+  svg.append(title, background, modules);
+  byId('apk-qr').replaceChildren(svg);
+}
+
+const apkDialog = byId('apk-dialog');
+const apkLoading = byId('apk-loading');
+const apkContent = byId('apk-content');
+const apkError = byId('apk-error');
+
+async function loadLatestApk() {
+  apkLoading.hidden = false;
+  apkContent.hidden = true;
+  apkError.hidden = true;
+  try {
+    const response = await fetch('/release.json', {
+      cache: 'no-store',
+      credentials: 'same-origin',
+    });
+    if (!response.ok) throw new Error(`读取最新版本失败（HTTP ${response.status}）`);
+    const release = parseReleaseManifest(await response.json());
+    renderDownloadQr(release.downloadUrl);
+    byId('apk-version').textContent = `${release.versionName}（版本号 ${release.versionCode}）`;
+    byId('apk-filename').textContent = release.apkAsset;
+    byId('apk-size').textContent = `${(release.sizeBytes / 1024 / 1024).toFixed(2)} MB`;
+    const download = byId('apk-download');
+    download.href = release.downloadUrl;
+    download.download = release.apkAsset;
+    apkContent.hidden = false;
+  } catch (error) {
+    byId('apk-error-message').textContent = error.message || '读取最新版本失败';
+    apkError.hidden = false;
+  } finally {
+    apkLoading.hidden = true;
+  }
+}
+
+byId('apk-open').addEventListener('click', () => {
+  apkDialog.showModal();
+  loadLatestApk();
+});
+byId('apk-retry').addEventListener('click', loadLatestApk);
+document.querySelectorAll('.apk-close').forEach((button) => {
+  button.addEventListener('click', () => apkDialog.close());
+});
+apkDialog.addEventListener('click', (event) => {
+  if (event.target === apkDialog) apkDialog.close();
+});
+
 const passwordDialog = byId('password-dialog');
 const passwordForm = byId('password-form');
 const passwordError = byId('password-error');

@@ -166,6 +166,11 @@ class TelemetryServerTest(unittest.TestCase):
                 return response.status, response_headers, response.read()
 
             try:
+                status, headers, body = request("GET", "/assets/qrcode.js")
+                self.assertEqual(200, status)
+                self.assertEqual("text/javascript; charset=utf-8", headers["content-type"])
+                self.assertIn(b"var qrcode=", body)
+
                 status, headers, _ = request(
                     "POST",
                     "/login",

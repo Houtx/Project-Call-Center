@@ -8,11 +8,11 @@
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; background: #f4f6f5; }
 button, input, select { font: inherit; letter-spacing: 0; }
-button { border: 0; border-radius: 6px; background: #176b45; color: #fff; min-height: 40px; padding: 0 16px; cursor: pointer; }
-button:hover { background: #115739; }
+button, .button-link { border: 0; border-radius: 6px; background: #176b45; color: #fff; min-height: 40px; padding: 0 16px; cursor: pointer; }
+button:hover, .button-link:hover { background: #115739; }
 button.secondary { background: #e7ece9; color: #25332b; }
 input, select { min-height: 42px; border: 1px solid #bac5bf; border-radius: 6px; background: #fff; padding: 8px 11px; color: #18201c; }
-input:focus, select:focus, button:focus-visible { outline: 3px solid rgba(23,107,69,.2); outline-offset: 1px; border-color: #176b45; }
+input:focus, select:focus, button:focus-visible, .button-link:focus-visible { outline: 3px solid rgba(23,107,69,.2); outline-offset: 1px; border-color: #176b45; }
 h1, h2, p { margin-top: 0; }
 h1 { margin-bottom: 0; font-size: 24px; line-height: 1.25; }
 h2 { margin-bottom: 4px; font-size: 17px; }
@@ -36,6 +36,18 @@ dialog::backdrop { background: rgba(24,32,28,.36); }
 .password-form label { margin-top: 4px; font-size: 13px; font-weight: 650; }
 .password-form .form-error { margin: 8px 0 0; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.button-link { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
+.apk-dialog-panel { width: min(560px, calc(100vw - 32px)); padding: 24px; }
+.apk-dialog-panel h2 { margin-bottom: 0; }
+.dialog-loading { display: flex; align-items: center; justify-content: center; gap: 12px; min-height: 220px; color: #46534c; }
+.dialog-loading[hidden], #apk-content[hidden], #apk-error[hidden] { display: none; }
+.apk-layout { display: grid; grid-template-columns: 240px minmax(0, 1fr); align-items: center; gap: 24px; margin-top: 20px; }
+.apk-qr { display: grid; place-items: center; width: 240px; aspect-ratio: 1; padding: 10px; border: 1px solid #d8dfdb; background: #fff; }
+.apk-qr svg { display: block; width: 100%; height: 100%; }
+.apk-details { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 12px; margin: 0; font-size: 13px; }
+.apk-details dt { color: #69766f; }
+.apk-details dd { min-width: 0; margin: 0; overflow-wrap: anywhere; font-weight: 650; }
+#apk-error .form-error { margin: 20px 0 0; }
 .dashboard { width: min(1440px, 100%); margin: 0 auto; padding: 22px 24px 48px; }
 .notice { margin-bottom: 16px; padding: 10px 12px; border-left: 3px solid #176b45; background: #eaf3ee; color: #355446; font-size: 13px; }
 .metrics-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
@@ -84,4 +96,8 @@ th { color: #59675f; background: #f8faf9; font-weight: 650; }
   .header-actions button { padding: 0 12px; }
   .metric-card { min-height: 98px; }
   .bar-row { grid-template-columns: 90px 1fr auto; }
+  .apk-dialog-panel { padding: 20px; }
+  .apk-layout { grid-template-columns: 1fr; justify-items: center; gap: 18px; }
+  .apk-qr { width: min(240px, 100%); }
+  .apk-details { width: 100%; }
 }

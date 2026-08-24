@@ -735,7 +735,7 @@ class TelemetryHandler(BaseHTTPRequestHandler):
             return
         if path.path.startswith("/assets/"):
             name = path.path.removeprefix("/assets/")
-            if name not in {"app.css", "dashboard.js"}:
+            if name not in {"app.css", "dashboard.js", "qrcode.js"}:
                 self.respond(HTTPStatus.NOT_FOUND, b"not found\n", "text/plain; charset=utf-8")
                 return
             self.serve_static(name)
