@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.provider.CallLog
 import android.telephony.PhoneNumberUtils
+import android.util.Log
 import androidx.core.content.ContextCompat
 
 data class MatchedCallLog(
@@ -25,14 +26,19 @@ class CallLogReader(private val context: Context) {
 
     fun latestOutgoingId(): Long {
         if (!hasPermission()) return -1
-        resolver.query(
-            CallLog.Calls.CONTENT_URI,
-            arrayOf(CallLog.Calls._ID),
-            "${CallLog.Calls.TYPE} = ?",
-            arrayOf(CallLog.Calls.OUTGOING_TYPE.toString()),
-            "${CallLog.Calls._ID} DESC",
-        )?.use { cursor ->
-            if (cursor.moveToFirst()) return cursor.getLong(0)
+        try {
+            resolver.query(
+                CallLog.Calls.CONTENT_URI,
+                arrayOf(CallLog.Calls._ID),
+                "${CallLog.Calls.TYPE} = ?",
+                arrayOf(CallLog.Calls.OUTGOING_TYPE.toString()),
+                "${CallLog.Calls._ID} DESC",
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) return cursor.getLong(0)
+            }
+        } catch (failure: RuntimeException) {
+            Log.w(LOG_TAG, "CallLog baseline unavailable: ${failure.javaClass.simpleName}")
+            return -1
         }
         return 0
     }
@@ -54,31 +60,36 @@ class CallLogReader(private val context: Context) {
             (initiatedAt - MATCH_CLOCK_TOLERANCE_MS).toString(),
             (initiatedAt + DIAL_START_MATCH_WINDOW_MS).toString(),
         )
-        resolver.query(
-            CallLog.Calls.CONTENT_URI,
-            projection,
-            selection,
-            args,
-            "${CallLog.Calls.DATE} ASC",
-        )?.use { cursor ->
-            while (cursor.moveToNext()) {
-                val candidate = cursor.getString(1) ?: continue
-                if (!PhoneNumberUtils.areSamePhoneNumber(phone, candidate, "CN")) continue
-                val startedAt = cursor.getLong(2)
-                val duration = cursor.getInt(3).coerceAtLeast(0)
-                val modifiedAt = cursor.getLong(4)
-                return MatchedCallLog(
-                    id = cursor.getLong(0),
-                    startedAt = startedAt,
-                    endedAt = modifiedAt.coerceAtLeast(startedAt + duration * 1_000L),
-                    durationSeconds = duration,
-                )
+        try {
+            resolver.query(
+                CallLog.Calls.CONTENT_URI,
+                projection,
+                selection,
+                args,
+                "${CallLog.Calls.DATE} ASC",
+            )?.use { cursor ->
+                while (cursor.moveToNext()) {
+                    val candidate = cursor.getString(1) ?: continue
+                    if (!PhoneNumberUtils.areSamePhoneNumber(phone, candidate, "CN")) continue
+                    val startedAt = cursor.getLong(2)
+                    val duration = cursor.getInt(3).coerceAtLeast(0)
+                    val modifiedAt = cursor.getLong(4)
+                    return MatchedCallLog(
+                        id = cursor.getLong(0),
+                        startedAt = startedAt,
+                        endedAt = modifiedAt.coerceAtLeast(startedAt + duration * 1_000L),
+                        durationSeconds = duration,
+                    )
+                }
             }
+        } catch (failure: RuntimeException) {
+            Log.w(LOG_TAG, "CallLog query unavailable: ${failure.javaClass.simpleName}")
         }
         return null
     }
 
     private companion object {
+        const val LOG_TAG = "CallCenterCallLog"
         const val MATCH_CLOCK_TOLERANCE_MS = 10_000L
         const val DIAL_START_MATCH_WINDOW_MS = 2L * 60L * 1_000L
     }

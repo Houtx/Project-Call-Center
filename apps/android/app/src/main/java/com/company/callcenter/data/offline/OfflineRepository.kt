@@ -280,7 +280,10 @@ class OfflineRepository(
         access.decrypt(history.encryptedPhone)
     }
 
-    suspend fun authorizeCall(contactId: String): DialAuthorization = withContext(Dispatchers.IO) {
+    suspend fun authorizeCall(
+        contactId: String,
+        systemManagedRouting: Boolean = false,
+    ): DialAuthorization = withContext(Dispatchers.IO) {
         callStateCoordinator.serialized {
             checkOfflineDialAccess()
             checkRequiredPermissions()
@@ -303,7 +306,11 @@ class OfflineRepository(
                 encryptedPhone = contact.encryptedPhone,
                 callLogBaselineId = callLogReader.latestOutgoingId(),
                 initiatedAt = initiatedAt,
-                deadlineAt = initiatedAt + COLLECTION_WINDOW_MILLIS,
+                deadlineAt = initiatedAt + if (systemManagedRouting) {
+                    SYSTEM_MANAGED_COLLECTION_WINDOW_MILLIS
+                } else {
+                    COLLECTION_WINDOW_MILLIS
+                },
                 previousState = contact.state,
                 previousCompletedAt = contact.completedAt,
                 previousQueueOrder = contact.queueOrder,
@@ -317,6 +324,7 @@ class OfflineRepository(
                 phone = phone,
                 recordingRequested = false,
                 source = DialSource.OFFLINE,
+                systemManagedRouting = systemManagedRouting,
             )
         }
     }
@@ -325,6 +333,53 @@ class OfflineRepository(
         callStateCoordinator.serialized {
             val pending = dao.pendingCall(attemptId) ?: return@serialized
             dao.cancelAttempt(pending)
+        }
+    }
+
+    suspend fun settleUnobservedCallAttempt(attemptId: String): Boolean = withContext(Dispatchers.IO) {
+        callStateCoordinator.serialized {
+            val pending = dao.pendingCall(attemptId) ?: return@serialized false
+            val phone = runCatching { access.decrypt(pending.encryptedPhone) }.getOrNull()
+                ?: return@serialized false
+            val matched = callLogReader.findOutgoing(phone, pending.callLogBaselineId, pending.initiatedAt)
+            if (matched != null) return@serialized false
+            val contact = dao.contact(pending.contactId) ?: return@serialized false
+            val now = clock()
+            val settlement = OfflineCallPolicy.settle(
+                result = OfflineCallResult.UNKNOWN,
+                attemptCount = contact.attemptCount,
+                maximumAttempts = maximumAttempts.value,
+                observedAt = now,
+            )
+            val settled = dao.settleAttempt(
+                pending = pending,
+                history = OfflineCallHistoryEntity(
+                    attemptId = pending.attemptId,
+                    contactId = pending.contactId,
+                    encryptedPhone = pending.encryptedPhone,
+                    encryptedName = contact.encryptedName,
+                    phoneMasked = contact.phoneMasked,
+                    result = OfflineCallResult.UNKNOWN.name,
+                    startedAt = pending.initiatedAt,
+                    durationSeconds = null,
+                    observedAt = now,
+                    systemCallLogId = null,
+                ),
+                state = settlement.state.name,
+                result = OfflineCallResult.UNKNOWN.name,
+                completedAt = settlement.completedAt,
+                queueOrder = dao.maximumQueueOrder() + 1,
+            )
+            if (settled) {
+                callMetricsRecorder.record(
+                    pending.attemptId,
+                    AppMode.OFFLINE,
+                    OfflineCallResult.UNKNOWN.name,
+                    null,
+                    pending.initiatedAt,
+                )
+            }
+            settled
         }
     }
 
@@ -510,6 +565,7 @@ class OfflineRepository(
         const val IMPORT_CHUNK_SIZE = 500
         const val TASK_PAGE_SIZE = 100
         const val COLLECTION_WINDOW_MILLIS = 24L * 60L * 60L * 1_000L
+        const val SYSTEM_MANAGED_COLLECTION_WINDOW_MILLIS = 2L * 60L * 1_000L
         const val DEFAULT_MAX_ATTEMPTS = 2
         const val MIN_MAX_ATTEMPTS = 1
         const val MAX_MAX_ATTEMPTS = 10

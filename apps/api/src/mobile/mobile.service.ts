@@ -31,6 +31,7 @@ import {
 import { callEligibility, classifyDuration, RETRY_INTERVAL_MS } from './call-policy';
 
 const COLLECTION_WINDOW_MS = 24 * 60 * 60 * 1000;
+const SYSTEM_MANAGED_COLLECTION_WINDOW_MS = 2 * 60 * 1000;
 const ONLINE_WINDOW_MS = 5 * 60 * 1000;
 const DIAL_NUMBER_TTL_MS = 60 * 1000;
 
@@ -214,7 +215,11 @@ export class MobileService {
             callLogBaselineAt: baselineAt,
             initiatedAt: now,
             dialedAt: now,
-            collectingDeadlineAt: new Date(now.getTime() + COLLECTION_WINDOW_MS),
+            collectingDeadlineAt: new Date(
+              now.getTime() + (body.systemManagedRouting
+                ? SYSTEM_MANAGED_COLLECTION_WINDOW_MS
+                : COLLECTION_WINDOW_MS),
+            ),
           },
           include: { customer: true },
         });
@@ -272,6 +277,82 @@ export class MobileService {
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
     );
     return { cancelled: true };
+  }
+
+  async settleUnobservedCallAttempt(attemptId: string, principal: AuthPrincipal) {
+    const device = await this.requireDevice(principal, false, false);
+    const now = new Date();
+    const result = await this.prisma.$transaction(
+      async (tx) => {
+        const attempt = await tx.callAttempt.findFirst({
+          where: {
+            id: attemptId,
+            agentId: principal.sub,
+            deviceId: device.id,
+          },
+          include: { result: true },
+        });
+        if (!attempt) throw new NotFoundException({ code: 'CALL_ATTEMPT_NOT_FOUND' });
+        if (attempt.status !== AttemptStatus.COLLECTING) {
+          return { settled: attempt.status === AttemptStatus.UNKNOWN, status: attempt.status };
+        }
+        const claimed = await tx.callAttempt.updateMany({
+          where: { id: attempt.id, status: AttemptStatus.COLLECTING },
+          data: { status: AttemptStatus.UNKNOWN, completedAt: now },
+        });
+        if (!claimed.count) return { settled: false, status: AttemptStatus.COLLECTING };
+        await tx.callResult.upsert({
+          where: { attemptId: attempt.id },
+          create: {
+            attemptId: attempt.id,
+            deviceId: device.id,
+            source: CallResultSource.TIMEOUT,
+            durationSeconds: null,
+            clientObservedAt: now,
+          },
+          update: {
+            deviceId: device.id,
+            source: CallResultSource.TIMEOUT,
+            durationSeconds: null,
+            clientObservedAt: now,
+          },
+        });
+        const [assignment, policy] = await Promise.all([
+          tx.assignment.findFirst({
+            where: { id: attempt.assignmentId, status: AssignmentStatus.ACTIVE },
+          }),
+          tx.mobileAppPolicy.upsert({
+            where: { id: 'android' },
+            create: { id: 'android' },
+            update: {},
+          }),
+        ]);
+        if (assignment) {
+          if (attempt.attemptNumber >= policy.maxCallAttempts) {
+            await this.completeCustomer(tx, attempt.customerId, principal.sub, 'ATTEMPT_LIMIT_UNKNOWN');
+          } else {
+            await this.enqueueAssignmentUpsert(
+              tx,
+              assignment.id,
+              assignment.agentId,
+              assignment.customerId,
+            );
+          }
+        }
+        return { settled: true, status: AttemptStatus.UNKNOWN };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
+    if (result.settled) {
+      await this.audit.record({
+        actorId: principal.sub,
+        action: 'MOBILE_CALL_ATTEMPT_UNOBSERVED',
+        entityType: 'call_attempt',
+        entityId: attemptId,
+        metadata: { deviceId: device.id, status: result.status },
+      });
+    }
+    return result;
   }
 
   async uploadRecording(attemptId: string, file: Express.Multer.File | undefined, principal: AuthPrincipal) {

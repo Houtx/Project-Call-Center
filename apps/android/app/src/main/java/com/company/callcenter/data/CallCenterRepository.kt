@@ -54,6 +54,7 @@ data class DialAuthorization(
     val phone: String,
     val recordingRequested: Boolean,
     val source: DialSource = DialSource.ONLINE,
+    val systemManagedRouting: Boolean = false,
 )
 
 class CallCenterRepository(
@@ -303,7 +304,10 @@ class CallCenterRepository(
         serverCall { api -> api.revealHistoryPhone(attemptId) }.phone
     }
 
-    suspend fun authorizeCall(assignmentId: String): DialAuthorization = withContext(Dispatchers.IO) {
+    suspend fun authorizeCall(
+        assignmentId: String,
+        systemManagedRouting: Boolean = false,
+    ): DialAuthorization = withContext(Dispatchers.IO) {
         checkRequiredPermissions()
         val baselineId = callLogReader.latestOutgoingId()
         val initiatedAt = System.currentTimeMillis()
@@ -314,6 +318,7 @@ class CallCenterRepository(
                     clientAttemptId = UUID.randomUUID().toString(),
                     callLogBaselineId = baselineId.toString(),
                     callLogBaselineAt = Instant.ofEpochMilli(initiatedAt).toString(),
+                    systemManagedRouting = systemManagedRouting,
                 ),
             )
             dao.upsertPendingCall(
@@ -327,7 +332,12 @@ class CallCenterRepository(
                     recordingRequested = response.recordingRequested,
                 ),
             )
-            DialAuthorization(response.attemptId, response.phone, response.recordingRequested)
+            DialAuthorization(
+                response.attemptId,
+                response.phone,
+                response.recordingRequested,
+                systemManagedRouting = systemManagedRouting,
+            )
         }
     }
 
@@ -335,6 +345,51 @@ class CallCenterRepository(
         val cancelled = serverCall { api -> api.cancelCallAttempt(attemptId).cancelled }
         check(cancelled) { "服务器未能撤销外呼尝试" }
         dao.deletePendingCall(attemptId)
+    }
+
+    suspend fun settleUnobservedCallAttempt(attemptId: String): Boolean = withContext(Dispatchers.IO) {
+        val completed = serverConfigurationMutex.withLock {
+            if (session.accessToken == null) return@withLock false
+            val settled = runCatching {
+                serverCallLocked { api -> api.settleUnobservedCallAttempt(attemptId) }
+            }.getOrNull()?.settled == true
+            if (!settled) return@withLock false
+            val pending = dao.pendingCall(attemptId) ?: return@withLock true
+            if (pending.state == "RESULT_SYNCED") {
+                val recordingSettled = !pending.recordingRequested || finishRecordingLocked(pending.attemptId)
+                if (recordingSettled) dao.deletePendingCall(pending.attemptId)
+                return@withLock true
+            }
+            val assignment = dao.assignment(pending.assignmentId)
+            val observedAt = System.currentTimeMillis()
+            dao.upsertHistory(
+                CallHistoryEntity(
+                    attemptId = pending.attemptId,
+                    assignmentId = pending.assignmentId,
+                    customerName = assignment?.name ?: "客户",
+                    phoneMasked = assignment?.phoneMasked ?: "***",
+                    status = "UNKNOWN",
+                    startedAt = pending.initiatedAt,
+                    durationSeconds = null,
+                    syncedAt = observedAt,
+                ),
+            )
+            callMetricsRecorder.record(
+                pending.attemptId,
+                AppMode.ONLINE,
+                "UNKNOWN",
+                null,
+                pending.initiatedAt,
+            )
+            dao.markCallResultSynced(pending.attemptId)
+            val recordingSettled = !pending.recordingRequested || finishRecordingLocked(pending.attemptId)
+            if (recordingSettled) dao.deletePendingCall(pending.attemptId)
+            true
+        }
+        if (completed) {
+            runCatching { sync() }
+        }
+        completed
     }
 
     suspend fun startRecording(attemptId: String): Boolean = withContext(Dispatchers.IO) {

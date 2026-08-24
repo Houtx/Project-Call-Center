@@ -283,7 +283,10 @@ class AgentViewModel(
     fun call(assignmentId: String) = launchBusy {
         checkOnlineMode()
         simCallManager.requireAvailableSim()
-        val authorization = repository.authorizeCall(assignmentId)
+        val authorization = repository.authorizeCall(
+            assignmentId,
+            systemManagedRouting = simCallManager.state.value.systemManagedRouting,
+        )
         dialChannel.send(authorization)
     }
 
@@ -407,7 +410,12 @@ class AgentViewModel(
                 (assignment.nextCallAllowedAt == null || assignment.nextCallAllowedAt <= now)
         } ?: error("暂无当前可外呼的任务")
         simCallManager.requireAvailableSim()
-        dialChannel.send(repository.authorizeCall(next.assignmentId))
+        dialChannel.send(
+            repository.authorizeCall(
+                next.assignmentId,
+                systemManagedRouting = simCallManager.state.value.systemManagedRouting,
+            ),
+        )
     }
 
     private companion object {

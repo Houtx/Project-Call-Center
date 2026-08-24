@@ -97,8 +97,8 @@ android {
         applicationId = "com.company.callcenter"
         minSdk = 31
         targetSdk = 35
-        versionCode = 14
-        versionName = "0.6.8"
+        versionCode = 15
+        versionName = "0.6.9"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true

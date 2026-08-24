@@ -74,6 +74,16 @@ export class MobileController {
 
   @ApiBearerAuth()
   @Roles(Role.AGENT)
+  @Post('call-attempts/:attemptId/unobserved')
+  settleUnobservedAttempt(
+    @Param('attemptId') attemptId: string,
+    @Req() request: RequestWithPrincipal,
+  ) {
+    return this.mobile.settleUnobservedCallAttempt(attemptId, request.user);
+  }
+
+  @ApiBearerAuth()
+  @Roles(Role.AGENT)
   @Post('call-attempts/:attemptId/recording')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 25 * 1024 * 1024 } }))
   uploadRecording(

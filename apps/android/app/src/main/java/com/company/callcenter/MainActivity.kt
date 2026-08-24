@@ -26,6 +26,7 @@ import com.company.callcenter.ui.OfflineViewModelFactory
 import com.company.callcenter.data.AppMode
 import com.company.callcenter.data.DialSource
 import com.company.callcenter.data.offline.OfflineDialAccessPolicy
+import com.company.callcenter.telephony.CallLaunchRoute
 import com.company.callcenter.update.AppUpdateException
 import com.company.callcenter.update.AppUpdateManager
 import com.company.callcenter.update.InstallLaunchResult
@@ -66,6 +67,8 @@ class MainActivity : ComponentActivity() {
     private var dialCollectorStarted = false
     private var pendingRecordingAuthorization: com.company.callcenter.data.DialAuthorization? = null
     private var backgroundLockJob: Job? = null
+    private var pendingSystemManagedAuthorization: com.company.callcenter.data.DialAuthorization? = null
+    private var systemManagedCallWentToBackground = false
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -191,10 +194,14 @@ class MainActivity : ComponentActivity() {
                 AppMode.OFFLINE -> offlineViewModel.onReturnedToForeground()
                 null -> Unit
             }
+            settleReturnedSystemManagedCall()
         }
     }
 
     override fun onStop() {
+        if (pendingSystemManagedAuthorization != null) {
+            systemManagedCallWentToBackground = true
+        }
         viewModel.onMovedToBackground()
         offlineViewModel.onMovedToBackground()
         if (appContainer.appModeStore.mode.value == AppMode.OFFLINE) {
@@ -378,8 +385,24 @@ class MainActivity : ComponentActivity() {
             cancelAuthorization(authorization)
             return
         }
+        if (authorization.systemManagedRouting) {
+            pendingSystemManagedAuthorization = authorization
+            systemManagedCallWentToBackground = false
+        }
         runCatching { appContainer.simCallManager.placeCall(authorization.phone) }
+            .onSuccess { route ->
+                if (route == CallLaunchRoute.SYSTEM_MANAGED) {
+                    // The SIM state may change between authorization and launch.
+                    // Trust the actual launch route for result-collection fallback.
+                    pendingSystemManagedAuthorization = authorization
+                } else {
+                    pendingSystemManagedAuthorization = null
+                    systemManagedCallWentToBackground = false
+                }
+            }
             .onFailure { failure ->
+                pendingSystemManagedAuthorization = null
+                systemManagedCallWentToBackground = false
                 if (authorization.source == DialSource.ONLINE) {
                     appContainer.repository.discardRecording()
                     viewModel.reportDialLaunchFailure(authorization.attemptId, failure)
@@ -387,6 +410,28 @@ class MainActivity : ComponentActivity() {
                     offlineViewModel.reportDialLaunchFailure(authorization.attemptId, failure)
                 }
             }
+    }
+
+    private fun settleReturnedSystemManagedCall() {
+        val authorization = pendingSystemManagedAuthorization ?: return
+        if (!systemManagedCallWentToBackground) return
+        pendingSystemManagedAuthorization = null
+        systemManagedCallWentToBackground = false
+        lifecycleScope.launch {
+            // System-managed dialers often update CallLog shortly after returning.
+            delay(SYSTEM_MANAGED_RESULT_GRACE_MILLIS)
+            when (authorization.source) {
+                DialSource.ONLINE -> {
+                    runCatching { appContainer.repository.reconcilePending() }
+                    runCatching { appContainer.repository.settleUnobservedCallAttempt(authorization.attemptId) }
+                }
+                DialSource.OFFLINE -> {
+                    offlineViewModel.onReturnedToForeground()
+                    runCatching { appContainer.offlineRepository.reconcilePending() }
+                    runCatching { appContainer.offlineRepository.settleUnobservedCallAttempt(authorization.attemptId) }
+                }
+            }
+        }
     }
 
     private fun isAuthorizationUsable(authorization: com.company.callcenter.data.DialAuthorization): Boolean =
@@ -434,5 +479,6 @@ class MainActivity : ComponentActivity() {
         const val LOG_TAG = "CallCenterActivity"
         const val PROGRESS_STEP_BYTES = 256L * 1024L
         const val OFFLINE_AUTO_LOCK_MILLIS = 60_000L
+        const val SYSTEM_MANAGED_RESULT_GRACE_MILLIS = 5_000L
     }
 }

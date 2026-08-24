@@ -37,6 +37,11 @@ interface CallCenterApi {
     @POST("mobile/call-attempts/{attemptId}/cancel")
     suspend fun cancelCallAttempt(@Path("attemptId") attemptId: String): CancelCallAttemptResponse
 
+    @POST("mobile/call-attempts/{attemptId}/unobserved")
+    suspend fun settleUnobservedCallAttempt(
+        @Path("attemptId") attemptId: String,
+    ): UnobservedCallAttemptResponse
+
     @Multipart
     @POST("mobile/call-attempts/{attemptId}/recording")
     suspend fun uploadRecording(

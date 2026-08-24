@@ -3,6 +3,7 @@ import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
+  IsBoolean,
   IsEnum,
   IsISO8601,
   IsInt,
@@ -33,6 +34,11 @@ export class CreateCallAttemptDto {
   @ApiProperty()
   @IsISO8601()
   callLogBaselineAt!: string;
+
+  @ApiPropertyOptional({ default: false })
+  @IsBoolean()
+  @IsOptional()
+  systemManagedRouting?: boolean;
 }
 
 export class CallObservationDto {

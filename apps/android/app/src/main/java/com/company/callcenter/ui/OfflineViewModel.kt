@@ -618,7 +618,12 @@ class OfflineViewModel(
 
     fun call(contactId: String) = launchBusy(message = "正在准备拨号…") {
         simCallManager.requireAvailableSim()
-        dialChannel.send(repository.authorizeCall(contactId))
+        dialChannel.send(
+            repository.authorizeCall(
+                contactId,
+                systemManagedRouting = simCallManager.state.value.systemManagedRouting,
+            ),
+        )
     }
 
     fun setAutoDialEnabled(enabled: Boolean) {
@@ -763,7 +768,12 @@ class OfflineViewModel(
             )
         } ?: error("当前筛选中暂无可外呼任务")
         simCallManager.requireAvailableSim()
-        dialChannel.send(repository.authorizeCall(next.id))
+        dialChannel.send(
+            repository.authorizeCall(
+                next.id,
+                systemManagedRouting = simCallManager.state.value.systemManagedRouting,
+            ),
+        )
     }
 
     private fun closeImportSession() {

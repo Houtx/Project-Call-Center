@@ -71,6 +71,7 @@ data class CallAttemptRequest(
     val clientAttemptId: String,
     val callLogBaselineId: String,
     val callLogBaselineAt: String,
+    val systemManagedRouting: Boolean = false,
 )
 data class CallAttemptResponse(
     val attemptId: String,
@@ -88,6 +89,7 @@ data class RecordingUploadResponse(
 )
 data class RecordingUnsupportedResponse(val marked: Boolean)
 data class CancelCallAttemptResponse(val cancelled: Boolean)
+data class UnobservedCallAttemptResponse(val settled: Boolean, val status: String)
 
 data class CallObservationBatch(val results: List<CallObservation>)
 data class CallObservation(

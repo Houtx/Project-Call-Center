@@ -35,6 +35,11 @@ data class SimDialState(
         get() = availableSims.isNotEmpty() || systemManagedRouting
 }
 
+enum class CallLaunchRoute {
+    ROUTED_SIM,
+    SYSTEM_MANAGED,
+}
+
 class SimCallManager(context: Context) {
     private val appContext = context.applicationContext
     private val preferences = appContext.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
@@ -71,7 +76,7 @@ class SimCallManager(context: Context) {
         }
     }
 
-    fun placeCall(phone: String) {
+    fun placeCall(phone: String): CallLaunchRoute {
         check(hasPermission(Manifest.permission.CALL_PHONE)) { "外呼权限未就绪" }
         val routedSims = readRoutedSims()
         val systemManagedRouting = routedSims.isEmpty() && canUseSystemManagedDialing()
@@ -92,7 +97,7 @@ class SimCallManager(context: Context) {
             } catch (failure: ActivityNotFoundException) {
                 throw IllegalStateException("系统电话服务不可用", failure)
             }
-            return
+            return CallLaunchRoute.SYSTEM_MANAGED
         }
 
         val nextSlot = preferences.getInt(NEXT_ALTERNATE_SLOT_KEY, 0)
@@ -116,6 +121,7 @@ class SimCallManager(context: Context) {
                 .putInt(NEXT_ALTERNATE_SLOT_KEY, decision.nextAlternateSlotIndex)
                 .apply()
         }
+        return CallLaunchRoute.ROUTED_SIM
     }
 
     private fun readRoutedSims(): List<RoutedSim> {

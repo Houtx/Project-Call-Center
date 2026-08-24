@@ -1,4 +1,4 @@
-import { AssignmentStatus, AttemptStatus, CustomerStatus } from '@prisma/client';
+import { AssignmentStatus, AttemptStatus, CallResultSource, CustomerStatus } from '@prisma/client';
 import { MobileService } from './mobile.service';
 
 describe('MobileService call completion', () => {
@@ -216,5 +216,57 @@ describe('MobileService call completion', () => {
       tokenVersion: 1,
     } as any)).resolves.toEqual({ cancelled: true });
     expect(tx.callAttempt.delete).not.toHaveBeenCalled();
+  });
+
+  it('settles an unobservable system-managed call and releases the assignment', async () => {
+    const attempt = {
+      id: 'attempt-1',
+      assignmentId: 'assignment-1',
+      customerId: 'customer-1',
+      agentId: 'agent-1',
+      deviceId: 'device-1',
+      attemptNumber: 1,
+      status: AttemptStatus.COLLECTING,
+      result: null,
+    };
+    const tx = {
+      callAttempt: {
+        findFirst: jest.fn().mockResolvedValue(attempt),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      callResult: { upsert: jest.fn() },
+      assignment: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'assignment-1',
+          agentId: 'agent-1',
+          customerId: 'customer-1',
+        }),
+      },
+      mobileAppPolicy: { upsert: jest.fn().mockResolvedValue({ maxCallAttempts: 2 }) },
+      syncChange: { create: jest.fn() },
+    };
+    const prisma = {
+      $transaction: jest.fn(async (operation: (client: typeof tx) => unknown) => operation(tx)),
+    };
+    const audit = { record: jest.fn() };
+    const service = new MobileService(prisma as any, {} as any, audit as any, { createPending: jest.fn() } as any);
+    jest.spyOn(service as any, 'requireDevice').mockResolvedValue({ id: 'device-1' });
+
+    await expect(service.settleUnobservedCallAttempt('attempt-1', {
+      sub: 'agent-1',
+      role: 'AGENT',
+      deviceId: 'device-1',
+      tokenVersion: 1,
+    } as any)).resolves.toEqual({ settled: true, status: AttemptStatus.UNKNOWN });
+    expect(tx.callResult.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({ source: CallResultSource.TIMEOUT, durationSeconds: null }),
+    }));
+    expect(tx.syncChange.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ operation: 'UPSERT', targetUserId: 'agent-1' }),
+    });
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'MOBILE_CALL_ATTEMPT_UNOBSERVED',
+      entityId: 'attempt-1',
+    }));
   });
 });
