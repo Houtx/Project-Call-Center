@@ -286,7 +286,7 @@ flowchart LR
 
 ### 离线版快速开始
 
-1. 从 [GitHub Releases](https://github.com/Houtx/Project-Call-Center/releases) 下载最新 APK，并安装到 Android 12 或更高版本的真机。
+1. 从 [GitHub Releases](https://github.com/Houtx/Project-Call-Center/releases) 下载最新 APK，并安装到 Android 8.0 或更高版本的真机。
 2. 首次打开 APP，选择“离线模式”或“本机独立模式”。
 3. 创建本地锁定密码。这个密码只用于保护当前手机里的离线数据，不是 CRM 账号。
 4. 在任务页导入表格或粘贴号码，确认列映射、预览内容和导入范围。
@@ -306,7 +306,7 @@ flowchart LR
 
 ### 支持范围
 
-- Android 12（API 31）及以上
+- Android 8.0（API 26）及以上
 - 真机 SIM 外呼；模拟器只能验证界面和普通网络请求
 - 单卡、双卡以及卡 1/卡 2/循环拨号策略
 - 同一个 APK 可选择在线 CRM 模式或离线本机模式；两种模式的数据相互隔离

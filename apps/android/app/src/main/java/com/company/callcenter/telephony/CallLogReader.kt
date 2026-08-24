@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.ContentResolver
 import android.content.Context
 import android.content.pm.PackageManager
+import android.os.Build
 import android.provider.CallLog
 import android.telephony.PhoneNumberUtils
 import android.util.Log
@@ -70,7 +71,7 @@ class CallLogReader(private val context: Context) {
             )?.use { cursor ->
                 while (cursor.moveToNext()) {
                     val candidate = cursor.getString(1) ?: continue
-                    if (!PhoneNumberUtils.areSamePhoneNumber(phone, candidate, "CN")) continue
+                    if (!areSamePhoneNumber(phone, candidate)) continue
                     val startedAt = cursor.getLong(2)
                     val duration = cursor.getInt(3).coerceAtLeast(0)
                     val modifiedAt = cursor.getLong(4)
@@ -87,6 +88,14 @@ class CallLogReader(private val context: Context) {
         }
         return null
     }
+
+    @Suppress("DEPRECATION")
+    private fun areSamePhoneNumber(expected: String, candidate: String): Boolean =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            PhoneNumberUtils.areSamePhoneNumber(expected, candidate, "CN")
+        } else {
+            PhoneNumberUtils.compare(expected, candidate)
+        }
 
     private companion object {
         const val LOG_TAG = "CallCenterCallLog"

@@ -1,6 +1,6 @@
 # Android Device Allowlist
 
-Production calling is disabled unless the exact manufacturer, model and Android API level are enabled in the server allowlist. The application supports Android 12 (API 31) and newer.
+Production calling is disabled unless the exact manufacturer, model and Android API level are enabled in the server allowlist. The application supports Android 8.0 (API 26) and newer. Android 8 through 11 devices require the same real-device SIM routing and CallLog validation as newer devices before they are added to the allowlist.
 
 ## Entry criteria
 

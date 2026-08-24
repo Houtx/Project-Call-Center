@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.telecom.PhoneAccountHandle
 import android.telecom.TelecomManager
@@ -142,11 +143,10 @@ class SimCallManager(context: Context) {
             callCapableAccounts
                 .asSequence()
                 .mapNotNull { accountHandle ->
-                    val subscriptionId = SimRoutingPolicy.matchPhoneAccountSubscriptionId(
-                        phoneAccountId = accountHandle.id,
+                    val subscriptionId = subscriptionIdForPhoneAccount(
+                        accountHandle = accountHandle,
                         activeSubscriptionIds = subscriptionsById.keys,
                     )
-                        ?: runCatching { telephonyManager.getSubscriptionId(accountHandle) }.getOrNull()
                     val subscription = subscriptionsById[subscriptionId] ?: return@mapNotNull null
                     if (subscription.simSlotIndex !in SUPPORTED_SLOT_INDEXES) return@mapNotNull null
                     val displayName = subscription.displayName?.toString()?.trim()
@@ -180,11 +180,30 @@ class SimCallManager(context: Context) {
     private fun hasPermission(permission: String): Boolean =
         ContextCompat.checkSelfPermission(appContext, permission) == PackageManager.PERMISSION_GRANTED
 
+    private fun subscriptionIdForPhoneAccount(
+        accountHandle: PhoneAccountHandle,
+        activeSubscriptionIds: Set<Int>,
+    ): Int? {
+        if (!hasPermission(Manifest.permission.READ_PHONE_STATE)) return null
+        SimRoutingPolicy.matchPhoneAccountSubscriptionId(
+            phoneAccountId = accountHandle.id,
+            activeSubscriptionIds = activeSubscriptionIds,
+        )?.let { return it }
+
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
+        return try {
+            telephonyManager.getSubscriptionId(accountHandle)
+                .takeIf { it in activeSubscriptionIds }
+        } catch (failure: SecurityException) {
+            Log.w(LOG_TAG, "Phone account subscription permission failure")
+            null
+        }
+    }
+
     private fun canUseSystemManagedDialing(): Boolean {
         if (!hasPermission(Manifest.permission.CALL_PHONE)) return false
         val packageManager = appContext.packageManager
-        val hasCallingFeature = packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY_CALLING) ||
-            packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY)
+        val hasCallingFeature = packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY)
         val callHandlerAvailable = Intent(Intent.ACTION_CALL, Uri.parse("tel:10086"))
             .resolveActivity(packageManager) != null
         return hasCallingFeature || callHandlerAvailable

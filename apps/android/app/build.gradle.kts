@@ -95,10 +95,10 @@ android {
 
     defaultConfig {
         applicationId = "com.company.callcenter"
-        minSdk = 31
+        minSdk = 26
         targetSdk = 35
-        versionCode = 15
-        versionName = "0.6.9"
+        versionCode = 16
+        versionName = "0.7.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true

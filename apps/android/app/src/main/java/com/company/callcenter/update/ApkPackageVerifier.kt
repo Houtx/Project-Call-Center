@@ -3,6 +3,7 @@ package com.company.callcenter.update
 import android.content.Context
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
+import android.os.Build
 import java.io.File
 import java.security.MessageDigest
 
@@ -14,22 +15,22 @@ internal class ApkPackageVerifier(context: Context) {
     fun verify(apkFile: File, release: AppRelease) {
         val archive = packageManager.getPackageArchiveInfo(
             apkFile.absolutePath,
-            PackageManager.GET_SIGNING_CERTIFICATES,
+            signingCertificateFlag(),
         ) ?: throw invalid("Downloaded file is not a valid APK")
         val archivePackageName = archive.packageName
         if (release.packageName != archivePackageName || archivePackageName != installedPackageName) {
             throw invalid("APK package name does not match the installed app")
         }
-        if (archive.longVersionCode != release.versionCode) {
+        if (archive.compatibleVersionCode() != release.versionCode) {
             throw invalid("APK version does not match the update manifest")
         }
 
         val installed = try {
-            packageManager.getPackageInfo(installedPackageName, PackageManager.GET_SIGNING_CERTIFICATES)
+            packageManager.getPackageInfo(installedPackageName, signingCertificateFlag())
         } catch (failure: PackageManager.NameNotFoundException) {
             throw invalid("Installed app metadata is unavailable", failure)
         }
-        if (archive.longVersionCode <= installed.longVersionCode) {
+        if (archive.compatibleVersionCode() <= installed.compatibleVersionCode()) {
             throw invalid("Downloaded APK is not newer than the installed app")
         }
 
@@ -40,14 +41,31 @@ internal class ApkPackageVerifier(context: Context) {
         }
     }
 
-    private fun PackageInfo.signingDigests(): Set<String> {
-        val info = signingInfo ?: return emptySet()
-        val signatures = if (info.hasMultipleSigners()) {
-            info.apkContentsSigners
+    @Suppress("DEPRECATION")
+    private fun signingCertificateFlag(): Int =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            PackageManager.GET_SIGNING_CERTIFICATES
         } else {
-            info.signingCertificateHistory
+            PackageManager.GET_SIGNATURES
         }
-        return signatures.orEmpty().mapTo(mutableSetOf()) { signature ->
+
+    @Suppress("DEPRECATION")
+    private fun PackageInfo.compatibleVersionCode(): Long =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) longVersionCode else versionCode.toLong()
+
+    @Suppress("DEPRECATION")
+    private fun PackageInfo.signingDigests(): Set<String> {
+        val certificates = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val info = signingInfo ?: return emptySet()
+            if (info.hasMultipleSigners()) {
+                info.apkContentsSigners
+            } else {
+                info.signingCertificateHistory
+            }
+        } else {
+            signatures
+        }
+        return certificates.orEmpty().mapTo(mutableSetOf()) { signature ->
             MessageDigest.getInstance("SHA-256").digest(signature.toByteArray()).toHex()
         }
     }
