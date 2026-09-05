@@ -52,6 +52,8 @@
 
 每个 Android Release 必须同时同步到本更新服务和 GitHub Release。漏掉更新服务器会导致国内客户端无法升级；漏掉 GitHub Release 会失去公开下载和备用分发入口。
 
+正式签名信息和比对命令统一维护在 [开发指南的 Android 正式签名档案](DEVELOPMENT_GUIDE.md#android-正式签名档案禁止更换)。发布前必须确认 keystore、alias 和 APK 的证书指纹一致；不要临时生成新 keystore 或改用 Debug 签名。
+
 1. 提升 `versionCode` 和 `versionName`，使用长期不变的正式证书构建 APK。
 2. 构建时固定更新地址：
 

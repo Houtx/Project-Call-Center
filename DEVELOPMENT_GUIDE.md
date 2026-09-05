@@ -138,6 +138,48 @@ npm run dev:web
 | `CALL_CENTER_KEYSTORE_PASSWORD` | keystore 密码，只从密码管理器或 CI 注入 |
 | `CALL_CENTER_KEY_ALIAS` / `CALL_CENTER_KEY_PASSWORD` | 签名 alias 和 key 密码 |
 
+### Android 正式签名档案（禁止更换）
+
+所有能够覆盖已安装 APP 的 Release APK 必须使用同一份正式证书。下面的信息用于定位和比对，**不包含密码或私钥**：
+
+| 项目 | 正式值 |
+| --- | --- |
+| Keystore（本机路径） | `$HOME/.config/project-call-center/android-release.jks` |
+| Keystore 类型 | `PKCS12` |
+| Alias | `project-call-center` |
+| macOS Keychain Service | `Project-Call-Center Android Release` |
+| macOS Keychain Account | `android-release` |
+| 证书主题 | `CN=Project Call Center, O=Project Call Center` |
+| 证书 SHA-256 | `1dc77e4ffdeba9e7bffa730826e4f7bb839884a92ccada8a75b88e2e0d45380d` |
+
+密码只从 macOS Keychain、CI Secret 或受控密码管理器注入，绝对不要写入仓库、`.env`、文档、命令输出或 GitHub Actions 日志。macOS 本机正式构建可以这样读取密码（命令不会把密码打印出来）：
+
+```bash
+export CALL_CENTER_KEYSTORE_FILE="$HOME/.config/project-call-center/android-release.jks"
+export CALL_CENTER_KEY_ALIAS='project-call-center'
+export CALL_CENTER_KEYSTORE_PASSWORD="$(security find-generic-password -s 'Project-Call-Center Android Release' -a 'android-release' -w)"
+export CALL_CENTER_KEY_PASSWORD="$CALL_CENTER_KEYSTORE_PASSWORD"
+```
+
+构建前先核对 keystore 指纹；如果文件不存在、alias 不存在，或 SHA-256 不是上表值，必须停止发布，不能生成新的 keystore，也不能使用 Debug keystore：
+
+```bash
+keytool -list -v \
+  -keystore "$CALL_CENTER_KEYSTORE_FILE" \
+  -storepass "$CALL_CENTER_KEYSTORE_PASSWORD" \
+  -alias "$CALL_CENTER_KEY_ALIAS" \
+  | grep -E 'Owner:|SHA256:'
+```
+
+构建完成后还要对 APK 再核对一次（以本机 Android SDK 的 `apksigner` 为准）：
+
+```bash
+apksigner verify --print-certs apps/android/app/build/outputs/apk/release/app-release.apk \
+  | grep -E 'Signer #1 certificate (DN|SHA-256 digest)'
+```
+
+APK 中的证书 SHA-256 必须仍为 `1dc77e4ffdeba9e7bffa730826e4f7bb839884a92ccada8a75b88e2e0d45380d`。例如 `20012e...` 等其他指纹都不是当前正式签名，不能发布，否则用户无法覆盖升级，可能需要卸载 APP 才能安装。
+
 ## 常用命令
 
 | 目的 | 命令 |
