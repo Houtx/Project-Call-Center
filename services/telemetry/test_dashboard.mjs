@@ -75,10 +75,11 @@ await new Promise((resolve) => setTimeout(resolve, 0));
 const document = dom.window.document;
 assert.equal(document.querySelectorAll('.metric-card').length, 8);
 assert.equal(document.querySelectorAll('.trend-svg rect.bar').length, 30);
-assert.equal(document.querySelectorAll('.trend-svg text').length, 10);
-assert.equal(document.querySelector('.trend-svg text').textContent, '07-01');
-assert.equal(document.querySelector('.trend-svg text:last-child').textContent, '07-30');
-assert.equal(document.querySelectorAll('.bar-row progress').length, 5);
+assert.equal(document.querySelectorAll('.trend-svg .gridline').length, 4);
+assert.equal(document.querySelectorAll('.trend-svg .date-label').length, 10);
+assert.equal(document.querySelector('.trend-svg .date-label').textContent, '07-01');
+assert.equal(document.querySelector('.trend-svg .date-label:last-child').textContent, '07-30');
+assert.equal(document.querySelectorAll('.bar-row .bar-fill').length, 5);
 assert.equal(document.querySelectorAll('#recent tr').length, 1);
 assert.match(document.querySelector('#metrics').textContent, /外呼总量/);
 assert.match(document.querySelector('#recent').textContent, /203\.0\.113\.\*/);
@@ -88,6 +89,26 @@ assert.equal(dom.window.getComputedStyle(document.querySelector('#loading')).dis
 assert.equal(document.querySelector('#password-open').textContent, '修改密码');
 assert.equal(document.querySelectorAll('#password-dialog input[type="password"]').length, 3);
 assert.equal(document.querySelector('#apk-open').textContent, '下载最新 APK');
+
+const trendBar = document.querySelector('.trend-svg rect.bar');
+assert.equal(trendBar.getAttribute('tabindex'), '0');
+assert.match(trendBar.getAttribute('aria-label'), /外呼总量 0/);
+trendBar.dispatchEvent(new dom.window.Event('pointerenter', { bubbles: true }));
+assert.equal(document.querySelector('#chart-tooltip').hidden, false);
+assert.match(document.querySelector('#chart-tooltip').textContent, /2026-07-01/);
+assert.match(document.querySelector('#chart-tooltip').textContent, /外呼总量：0/);
+trendBar.dispatchEvent(new dom.window.Event('pointerleave', { bubbles: true }));
+assert.equal(document.querySelector('#chart-tooltip').hidden, true);
+
+const dimensionBar = document.querySelector('.bar-row');
+assert.equal(dimensionBar.getAttribute('tabindex'), '0');
+assert.match(dimensionBar.getAttribute('aria-label'), /占比 100\.0%/);
+dimensionBar.dispatchEvent(new dom.window.Event('pointerenter', { bubbles: true }));
+assert.equal(document.querySelector('#chart-tooltip').hidden, false);
+assert.match(document.querySelector('#chart-tooltip').textContent, /0\.6\.6/);
+assert.match(document.querySelector('#chart-tooltip').textContent, /占该分类总量：100\.0%/);
+dimensionBar.dispatchEvent(new dom.window.Event('pointerleave', { bubbles: true }));
+assert.equal(document.querySelector('#chart-tooltip').hidden, true);
 
 const apkDialog = document.querySelector('#apk-dialog');
 apkDialog.showModal = () => { apkDialog.open = true; };

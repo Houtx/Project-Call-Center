@@ -38,7 +38,7 @@
         <div><h2>每日趋势</h2><p>活跃安装与外呼量按日汇总</p></div>
         <span id="updated-at" class="muted"></span>
       </div>
-      <div id="trend" class="trend-chart" role="img" aria-label="每日外呼趋势"></div>
+      <div id="trend" class="trend-chart" role="group" aria-label="每日外呼趋势"></div>
     </section>
 
     <section class="split-grid">
@@ -59,6 +59,7 @@
     <div id="loading" class="loading-overlay" hidden><div class="loading-box"><span class="spinner"></span><strong>正在加载统计</strong></div></div>
     <p id="error" class="page-error" hidden></p>
   </main>
+  <div id="chart-tooltip" class="chart-tooltip" role="tooltip" hidden></div>
 
   <dialog id="password-dialog" aria-labelledby="password-title">
     <form id="password-form" class="password-form">

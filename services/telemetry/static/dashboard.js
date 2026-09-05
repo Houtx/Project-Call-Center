@@ -1,6 +1,58 @@
 const byId = (id) => document.getElementById(id);
 const number = new Intl.NumberFormat('zh-CN');
 const dateTime = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short' });
+const chartTooltip = byId('chart-tooltip');
+
+function numeric(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+function positionChartTooltip(clientX, clientY, anchor) {
+  const margin = 12;
+  const gap = 14;
+  const tooltipRect = chartTooltip.getBoundingClientRect();
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1024;
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 768;
+  const anchorRect = anchor?.getBoundingClientRect?.();
+  const hasPointerPosition = Number.isFinite(clientX) && Number.isFinite(clientY);
+  let left = hasPointerPosition
+    ? clientX + gap
+    : (anchorRect ? anchorRect.left + anchorRect.width / 2 : margin);
+  let top = hasPointerPosition
+    ? clientY + gap
+    : (anchorRect ? anchorRect.top : margin);
+
+  if (left + tooltipRect.width + margin > viewportWidth) {
+    left = Math.max(margin, viewportWidth - tooltipRect.width - margin);
+  }
+  if (top + tooltipRect.height + margin > viewportHeight) {
+    top = Math.max(margin, top - tooltipRect.height - gap);
+  }
+  chartTooltip.style.left = `${Math.round(Math.max(margin, left))}px`;
+  chartTooltip.style.top = `${Math.round(Math.max(margin, top))}px`;
+}
+
+function showChartTooltip(lines, event, anchor) {
+  chartTooltip.textContent = lines.join('\n');
+  chartTooltip.hidden = false;
+  positionChartTooltip(event?.clientX, event?.clientY, anchor);
+}
+
+function hideChartTooltip() {
+  chartTooltip.hidden = true;
+}
+
+function bindChartTooltip(node, lines) {
+  const show = (event) => showChartTooltip(lines, event, node);
+  node.addEventListener('pointerenter', show);
+  node.addEventListener('pointermove', show);
+  node.addEventListener('pointerleave', () => {
+    if (document.activeElement !== node) hideChartTooltip();
+  });
+  node.addEventListener('focus', show);
+  node.addEventListener('blur', hideChartTooltip);
+}
 
 function duration(seconds) {
   const value = Math.round(Number(seconds) || 0);
@@ -39,43 +91,85 @@ function renderMetrics(data) {
 }
 
 function renderTrend(rows) {
-  const maximum = Math.max(1, ...rows.map((row) => row.calls));
+  hideChartTooltip();
+  const values = rows.map((row) => numeric(row.calls));
+  const maximum = Math.max(1, ...values);
   const svgNamespace = 'http://www.w3.org/2000/svg';
-  const width = Math.max(720, rows.length * 22);
+  const width = Math.max(760, rows.length * 24);
+  const height = 240;
+  const plotLeft = 42;
+  const plotRight = width - 8;
+  const plotTop = 16;
+  const baseline = 190;
+  const plotHeight = baseline - plotTop;
   const labelCount = Math.min(10, rows.length);
   const labelIndexes = new Set(Array.from({ length: labelCount }, (_, index) => (
     labelCount === 1 ? 0 : Math.round(index * (rows.length - 1) / (labelCount - 1))
   )));
   const svg = document.createElementNS(svgNamespace, 'svg');
   svg.classList.add('trend-svg');
-  svg.setAttribute('viewBox', `0 0 ${width} 210`);
+  svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
   svg.setAttribute('preserveAspectRatio', 'none');
+  const gridGroup = document.createElementNS(svgNamespace, 'g');
+  gridGroup.setAttribute('aria-hidden', 'true');
+  [1, .75, .5, .25].forEach((ratio) => {
+    const y = plotTop + plotHeight * (1 - ratio);
+    const gridline = document.createElementNS(svgNamespace, 'line');
+    gridline.classList.add('gridline');
+    gridline.setAttribute('x1', String(plotLeft));
+    gridline.setAttribute('x2', String(plotRight));
+    gridline.setAttribute('y1', String(y));
+    gridline.setAttribute('y2', String(y));
+    const label = document.createElementNS(svgNamespace, 'text');
+    label.classList.add('y-axis-label');
+    label.setAttribute('x', String(plotLeft - 8));
+    label.setAttribute('y', String(y + 3));
+    label.setAttribute('text-anchor', 'end');
+    label.textContent = number.format(Math.round(maximum * ratio));
+    gridGroup.append(gridline, label);
+  });
+  svg.append(gridGroup);
   const axis = document.createElementNS(svgNamespace, 'line');
   axis.classList.add('axis');
-  axis.setAttribute('x1', '0');
-  axis.setAttribute('x2', String(width));
-  axis.setAttribute('y1', '184');
-  axis.setAttribute('y2', '184');
+  axis.setAttribute('x1', String(plotLeft));
+  axis.setAttribute('x2', String(plotRight));
+  axis.setAttribute('y1', String(baseline));
+  axis.setAttribute('y2', String(baseline));
   svg.append(axis);
   rows.forEach((row, index) => {
-    const slot = width / Math.max(1, rows.length);
-    const height = Math.max(2, Math.round((row.calls / maximum) * 156));
+    const slot = (plotRight - plotLeft) / Math.max(1, rows.length);
+    const calls = values[index];
+    const connected = numeric(row.connected);
+    const installations = numeric(row.installations);
+    const barHeight = calls > 0 ? Math.max(3, Math.round((calls / maximum) * plotHeight)) : 2;
     const bar = document.createElementNS(svgNamespace, 'rect');
     bar.classList.add('bar');
-    bar.setAttribute('x', String(index * slot + slot * .15));
-    bar.setAttribute('y', String(184 - height));
+    bar.setAttribute('x', String(plotLeft + index * slot + slot * .15));
+    bar.setAttribute('y', String(baseline - barHeight));
     bar.setAttribute('width', String(slot * .7));
-    bar.setAttribute('height', String(height));
+    bar.setAttribute('height', String(barHeight));
+    bar.setAttribute('rx', '3');
+    bar.setAttribute('tabindex', '0');
+    bar.setAttribute('role', 'img');
+    bar.setAttribute('aria-label', `${row.date}，外呼总量 ${number.format(calls)}，接通 ${number.format(connected)}，活跃安装 ${number.format(installations)}`);
+    const tooltipLines = [
+      row.date,
+      `外呼总量：${number.format(calls)}`,
+      `接通数：${number.format(connected)}`,
+      `活跃安装：${number.format(installations)}`,
+    ];
+    bindChartTooltip(bar, tooltipLines);
     const title = document.createElementNS(svgNamespace, 'title');
-    title.textContent = `${row.date}：外呼 ${row.calls}，接通 ${row.connected}，活跃安装 ${row.installations}`;
+    title.textContent = tooltipLines.join('，');
     bar.append(title);
     svg.append(bar);
     if (labelIndexes.has(index)) {
       const label = document.createElementNS(svgNamespace, 'text');
-      label.setAttribute('x', String(index * slot + slot / 2));
-      label.setAttribute('y', '202');
+      label.classList.add('date-label');
+      label.setAttribute('x', String(plotLeft + index * slot + slot / 2));
+      label.setAttribute('y', '210');
       label.setAttribute('text-anchor', index === 0 ? 'start' : index === rows.length - 1 ? 'end' : 'middle');
-      label.textContent = row.date.slice(5);
+      label.textContent = String(row.date).slice(5);
       svg.append(label);
     }
   });
@@ -84,19 +178,36 @@ function renderTrend(rows) {
 
 const countryNames = { CN: '中国', HK: '中国香港', MO: '中国澳门', TW: '中国台湾', SG: '新加坡', MY: '马来西亚', ZZ: '未知' };
 function renderBars(id, rows, formatter = (value) => String(value)) {
-  const maximum = Math.max(1, ...rows.map((row) => row.value));
+  hideChartTooltip();
+  const values = rows.map((row) => numeric(row.value));
+  const maximum = Math.max(1, ...values);
+  const total = values.reduce((sum, value) => sum + value, 0);
   const nodes = rows.length ? rows.map((row) => {
+    const rowValue = numeric(row.value);
+    const labelText = formatter(row.label);
+    const percentage = total ? (rowValue / total) * 100 : 0;
     const node = document.createElement('div');
     node.className = 'bar-row';
+    node.tabIndex = 0;
+    node.setAttribute('role', 'img');
     const label = document.createElement('span');
-    label.textContent = formatter(row.label);
+    label.textContent = labelText;
     label.title = label.textContent;
-    const track = document.createElement('progress');
-    track.max = maximum;
-    track.value = row.value;
-    track.setAttribute('aria-label', `${label.textContent} ${row.value}`);
+    const track = document.createElement('span');
+    track.className = 'bar-track';
+    track.setAttribute('aria-hidden', 'true');
+    const fill = document.createElement('span');
+    fill.className = 'bar-fill';
+    fill.style.width = `${Math.max(0, Math.min(100, (rowValue / maximum) * 100))}%`;
+    track.append(fill);
     const value = document.createElement('strong');
-    value.textContent = number.format(row.value);
+    value.textContent = number.format(rowValue);
+    node.setAttribute('aria-label', `${labelText}，数量 ${number.format(rowValue)}，占比 ${percentage.toFixed(1)}%`);
+    bindChartTooltip(node, [
+      labelText,
+      `数量：${number.format(rowValue)}`,
+      `占该分类总量：${percentage.toFixed(1)}%`,
+    ]);
     node.append(label, track, value);
     return node;
   }) : [Object.assign(document.createElement('p'), { className: 'muted', textContent: '暂无数据' })];
