@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -33,6 +34,7 @@ import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.PhoneAndroid
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.RestartAlt
 import androidx.compose.material.icons.outlined.Remove
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Visibility
@@ -241,6 +243,7 @@ private fun OfflineMainScreen(
     onUseOnline: () -> Unit,
 ) {
     var tab by remember { mutableIntStateOf(0) }
+    var showRecoveryConfirmation by remember { mutableStateOf(false) }
     val snackbars = remember { SnackbarHostState() }
     var showPasswordDialog by remember { mutableStateOf(false) }
     LaunchedEffect(tab) {
@@ -256,6 +259,15 @@ private fun OfflineMainScreen(
             viewModel.clearError()
             viewModel.clearMessage()
         }
+    }
+    if (showRecoveryConfirmation) {
+        PendingCallRecoveryDialog(
+            onDismiss = { showRecoveryConfirmation = false },
+            onConfirm = {
+                showRecoveryConfirmation = false
+                viewModel.forceRecoverPendingCalls()
+            },
+        )
     }
     state.revealedPhone?.let { phone ->
         AlertDialog(
@@ -313,6 +325,14 @@ private fun OfflineMainScreen(
                 title = { Text(titles[tab]) },
                 actions = {
                     if (tab == 0) {
+                        TextButton(
+                            onClick = { showRecoveryConfirmation = true },
+                            enabled = state.hasPendingCall && !state.loading,
+                        ) {
+                            Icon(Icons.Outlined.RestartAlt, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("强制恢复")
+                        }
                         IconButton(
                             onClick = viewModel::refresh,
                             enabled = !state.loading && !state.autoDial.enabled,

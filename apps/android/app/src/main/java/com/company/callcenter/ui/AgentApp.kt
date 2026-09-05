@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -27,6 +28,7 @@ import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.LockOpen
 import androidx.compose.material.icons.outlined.PeopleAlt
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.RestartAlt
 import androidx.compose.material.icons.outlined.SimCard
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material3.AlertDialog
@@ -216,6 +218,7 @@ private fun MainScreen(
     onUseOffline: () -> Unit,
 ) {
     var tab by remember { mutableIntStateOf(0) }
+    var showRecoveryConfirmation by remember { mutableStateOf(false) }
     val snackbars = remember { SnackbarHostState() }
     LaunchedEffect(tab) {
         viewModel.setAutoDialTaskScreenVisible(tab == 0)
@@ -223,11 +226,21 @@ private fun MainScreen(
     DisposableEffect(viewModel) {
         onDispose { viewModel.setAutoDialTaskScreenVisible(false) }
     }
-    LaunchedEffect(state.error) {
-        state.error?.let {
+    LaunchedEffect(state.error, state.message) {
+        (state.error ?: state.message)?.let {
             snackbars.showSnackbar(it)
             viewModel.clearError()
+            viewModel.clearMessage()
         }
+    }
+    if (showRecoveryConfirmation) {
+        PendingCallRecoveryDialog(
+            onDismiss = { showRecoveryConfirmation = false },
+            onConfirm = {
+                showRecoveryConfirmation = false
+                viewModel.forceRecoverPendingCalls()
+            },
+        )
     }
     state.revealedPhone?.let { phone ->
         AlertDialog(
@@ -246,6 +259,14 @@ private fun MainScreen(
                 title = { Text(listOf("待呼任务", "通话记录", "外呼统计", "我的")[tab]) },
                 actions = {
                     if (tab == 0) {
+                        TextButton(
+                            onClick = { showRecoveryConfirmation = true },
+                            enabled = state.hasPendingCall && !state.loading,
+                        ) {
+                            Icon(Icons.Outlined.RestartAlt, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("强制恢复")
+                        }
                         IconButton(
                             onClick = viewModel::refresh,
                             enabled = !state.loading && !state.autoDial.enabled,

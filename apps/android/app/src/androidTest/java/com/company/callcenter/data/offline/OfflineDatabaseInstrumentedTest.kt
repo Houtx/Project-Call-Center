@@ -6,6 +6,9 @@ import androidx.room.testing.MigrationTestHelper
 import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.company.callcenter.data.AppMode
+import com.company.callcenter.data.AppModeStore
+import com.company.callcenter.telephony.CallLogReader
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.After
@@ -159,6 +162,56 @@ class OfflineDatabaseInstrumentedTest {
             listOf("3"),
             dao.observeAllContacts(null, null, "second", null, null, "ALL", 100).first().map { it.id },
         )
+    }
+
+    @Test
+    fun forceRecoverySettlesUnknownAndAllowsAnotherAttempt() = runTest {
+        val database = createDatabase()
+        val dao = database.dao()
+        val access = OfflineAccessStore(context)
+        access.clearPassword()
+        val appMode = AppModeStore(context, AppMode.OFFLINE).also { it.select(AppMode.OFFLINE) }
+        val repository = OfflineRepository(
+            context = context,
+            database = database,
+            access = access,
+            callLogReader = CallLogReader(context),
+            appModeStore = appMode,
+            clock = { 1_000L },
+        )
+        repository.createPassword("test-password")
+        try {
+            dao.insertContacts(listOf(contact(1).copy(state = "COLLECTING", attemptCount = 1)))
+            val pending = OfflinePendingCallEntity(
+                attemptId = "attempt-1",
+                contactId = "1",
+                encryptedPhone = access.encrypt("13800138000"),
+                callLogBaselineId = Long.MAX_VALUE,
+                initiatedAt = 900L,
+                deadlineAt = Long.MAX_VALUE,
+                previousState = "READY",
+                previousCompletedAt = null,
+                previousQueueOrder = 1L,
+            )
+            dao.insertPendingCall(pending)
+
+            val result = repository.forceRecoverPendingCalls()
+
+            assertEquals(1, result.recoveredCount)
+            assertEquals(0, result.remainingCount)
+            assertFalse(dao.hasPendingCall())
+            assertEquals("UNKNOWN", dao.observeHistory().first().single().result)
+            assertEquals("RETRY", dao.contact("1")?.state)
+            assertTrue(
+                dao.beginAttempt(
+                    pending.copy(attemptId = "attempt-2", initiatedAt = 1_100L),
+                    queueOrder = 3L,
+                    maxAttempts = 2,
+                ),
+            )
+        } finally {
+            access.clearPassword()
+        }
     }
 
     private fun createDatabase(): OfflineDatabase = Room.inMemoryDatabaseBuilder(context, OfflineDatabase::class.java)

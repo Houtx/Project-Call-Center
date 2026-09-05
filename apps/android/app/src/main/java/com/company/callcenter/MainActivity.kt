@@ -219,9 +219,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         backgroundLockJob?.cancel()
-        if (isFinishing && dialCollectorStarted && appContainer.appModeStore.mode.value == AppMode.OFFLINE) {
-            offlineViewModel.lock()
-        }
         super.onDestroy()
     }
 
@@ -478,7 +475,7 @@ class MainActivity : ComponentActivity() {
     private companion object {
         const val LOG_TAG = "CallCenterActivity"
         const val PROGRESS_STEP_BYTES = 256L * 1024L
-        const val OFFLINE_AUTO_LOCK_MILLIS = 60_000L
+        const val OFFLINE_AUTO_LOCK_MILLIS = 60L * 60L * 1_000L
         const val SYSTEM_MANAGED_RESULT_GRACE_MILLIS = 5_000L
     }
 }

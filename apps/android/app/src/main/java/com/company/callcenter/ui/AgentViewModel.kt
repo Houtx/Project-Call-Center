@@ -45,6 +45,7 @@ data class AgentUiState(
     val hasPendingCall: Boolean = false,
     val loading: Boolean = false,
     val error: String? = null,
+    val message: String? = null,
     val revealedPhone: String? = null,
     val simDial: SimDialState = SimDialState(),
     val serverConnection: ServerConnectionState = ServerConnectionState(
@@ -230,6 +231,25 @@ class AgentViewModel(
 
     fun refresh() = launchBusy(clearError = false) { refreshData() }
 
+    fun forceRecoverPendingCalls() {
+        autoDialController.stop("正在强制恢复拨号，自动拨号已关闭")
+        launchBusy {
+            checkOnlineMode()
+            val result = repository.forceRecoverPendingCalls()
+            check(result.remainingCount == 0) {
+                "服务器尚未确认上一通电话结束，请检查网络后再次强制恢复"
+            }
+            transient.value = transient.value.copy(
+                message = when {
+                    result.recoveredCount == 0 -> "当前没有需要恢复的通话"
+                    result.abandonedRecordingCount > 0 ->
+                        "已恢复拨号并处理 ${result.recoveredCount} 条遗留状态；未完成的录音已放弃"
+                    else -> "已恢复拨号并处理 ${result.recoveredCount} 条遗留状态"
+                },
+            )
+        }
+    }
+
     private suspend fun refreshData(validateServer: Boolean = true) {
         checkOnlineMode()
         simCallManager.refresh()
@@ -362,6 +382,10 @@ class AgentViewModel(
 
     fun clearError() {
         transient.value = transient.value.copy(error = null)
+    }
+
+    fun clearMessage() {
+        transient.value = transient.value.copy(message = null)
     }
 
     private fun launchBusy(clearError: Boolean = true, block: suspend () -> Unit) {

@@ -57,6 +57,12 @@ data class DialAuthorization(
     val systemManagedRouting: Boolean = false,
 )
 
+data class PendingCallRecoveryResult(
+    val recoveredCount: Int,
+    val abandonedRecordingCount: Int = 0,
+    val remainingCount: Int = 0,
+)
+
 class CallCenterRepository(
     private val context: Context,
     private val dao: CallCenterDao,
@@ -350,10 +356,13 @@ class CallCenterRepository(
     suspend fun settleUnobservedCallAttempt(attemptId: String): Boolean = withContext(Dispatchers.IO) {
         val completed = serverConfigurationMutex.withLock {
             if (session.accessToken == null) return@withLock false
-            val settled = runCatching {
+            val response = runCatching {
                 serverCallLocked { api -> api.settleUnobservedCallAttempt(attemptId) }
-            }.getOrNull()?.settled == true
-            if (!settled) return@withLock false
+            }.getOrNull() ?: return@withLock false
+            val terminalStatus = response.status.takeIf {
+                it == "CONNECTED" || it == "NOT_CONNECTED" || it == "UNKNOWN"
+            }
+            if (!response.settled && terminalStatus == null) return@withLock false
             val pending = dao.pendingCall(attemptId) ?: return@withLock true
             if (pending.state == "RESULT_SYNCED") {
                 val recordingSettled = !pending.recordingRequested || finishRecordingLocked(pending.attemptId)
@@ -368,17 +377,17 @@ class CallCenterRepository(
                     assignmentId = pending.assignmentId,
                     customerName = assignment?.name ?: "客户",
                     phoneMasked = assignment?.phoneMasked ?: "***",
-                    status = "UNKNOWN",
+                    status = terminalStatus ?: "UNKNOWN",
                     startedAt = pending.initiatedAt,
-                    durationSeconds = null,
+                    durationSeconds = if (terminalStatus == "NOT_CONNECTED") 0 else null,
                     syncedAt = observedAt,
                 ),
             )
             callMetricsRecorder.record(
                 pending.attemptId,
                 AppMode.ONLINE,
-                "UNKNOWN",
-                null,
+                terminalStatus ?: "UNKNOWN",
+                if (terminalStatus == "NOT_CONNECTED") 0 else null,
                 pending.initiatedAt,
             )
             dao.markCallResultSynced(pending.attemptId)
@@ -390,6 +399,47 @@ class CallCenterRepository(
             runCatching { sync() }
         }
         completed
+    }
+
+    suspend fun forceRecoverPendingCalls(): PendingCallRecoveryResult = withContext(Dispatchers.IO) {
+        val initialCount = dao.pendingCalls().size
+        reconcilePending()
+
+        dao.pendingCalls()
+            .filter { it.state == "COLLECTING" }
+            .forEach { pending -> settleUnobservedCallAttempt(pending.attemptId) }
+
+        val recordingPending = dao.pendingCalls().filter { it.state == "RESULT_SYNCED" }
+        if (recordingPending.isNotEmpty()) {
+            discardRecording()
+            recordingPending.forEach { pending ->
+                pending.recordingPath?.let { path -> runCatching { java.io.File(path).delete() } }
+                if (pending.recordingRequested) {
+                    try {
+                        markRecordingUnsupported(pending.attemptId, "USER_FORCED_RECOVERY")
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Throwable) {
+                        // The result is already settled. Local recovery must not stay blocked by recording upload.
+                    }
+                }
+                dao.deletePendingCall(pending.attemptId)
+            }
+        }
+
+        try {
+            sync()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Throwable) {
+            // The next foreground refresh will retry assignment synchronization.
+        }
+        val remainingCount = dao.pendingCalls().count { it.state == "COLLECTING" || it.state == "RESULT_SYNCED" }
+        PendingCallRecoveryResult(
+            recoveredCount = (initialCount - remainingCount).coerceAtLeast(0),
+            abandonedRecordingCount = recordingPending.count { it.recordingRequested },
+            remainingCount = remainingCount,
+        )
     }
 
     suspend fun startRecording(attemptId: String): Boolean = withContext(Dispatchers.IO) {

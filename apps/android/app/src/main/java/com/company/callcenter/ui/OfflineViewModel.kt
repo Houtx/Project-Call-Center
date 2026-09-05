@@ -518,6 +518,21 @@ class OfflineViewModel(
 
     fun refresh() = launchBusy(clearError = false) { refreshData() }
 
+    fun forceRecoverPendingCalls() {
+        autoDialController.stop("正在强制恢复拨号，自动拨号已关闭")
+        launchBusy(message = "正在强制恢复拨号…") {
+            val result = repository.forceRecoverPendingCalls()
+            check(result.remainingCount == 0) { "仍有通话状态未能恢复，请稍后重试" }
+            transient.value = transient.value.copy(
+                message = if (result.recoveredCount == 0) {
+                    "当前没有需要恢复的通话"
+                } else {
+                    "已恢复拨号并处理 ${result.recoveredCount} 条遗留状态"
+                },
+            )
+        }
+    }
+
     fun onReturnedToForeground() {
         viewModelScope.launch {
             simCallManager.refresh()

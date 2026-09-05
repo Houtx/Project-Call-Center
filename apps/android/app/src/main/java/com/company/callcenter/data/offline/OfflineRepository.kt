@@ -11,6 +11,7 @@ import com.company.callcenter.data.CallStatistics
 import com.company.callcenter.data.CallStatisticsRange
 import com.company.callcenter.data.DialAuthorization
 import com.company.callcenter.data.DialSource
+import com.company.callcenter.data.PendingCallRecoveryResult
 import com.company.callcenter.data.local.CallStatisticsRow
 import com.company.callcenter.offline.importing.PhoneNumberNormalizer
 import com.company.callcenter.telephony.CallLogReader
@@ -343,44 +344,22 @@ class OfflineRepository(
                 ?: return@serialized false
             val matched = callLogReader.findOutgoing(phone, pending.callLogBaselineId, pending.initiatedAt)
             if (matched != null) return@serialized false
-            val contact = dao.contact(pending.contactId) ?: return@serialized false
-            val now = clock()
-            val settlement = OfflineCallPolicy.settle(
-                result = OfflineCallResult.UNKNOWN,
-                attemptCount = contact.attemptCount,
-                maximumAttempts = maximumAttempts.value,
-                observedAt = now,
-            )
-            val settled = dao.settleAttempt(
-                pending = pending,
-                history = OfflineCallHistoryEntity(
-                    attemptId = pending.attemptId,
-                    contactId = pending.contactId,
-                    encryptedPhone = pending.encryptedPhone,
-                    encryptedName = contact.encryptedName,
-                    phoneMasked = contact.phoneMasked,
-                    result = OfflineCallResult.UNKNOWN.name,
-                    startedAt = pending.initiatedAt,
-                    durationSeconds = null,
-                    observedAt = now,
-                    systemCallLogId = null,
-                ),
-                state = settlement.state.name,
-                result = OfflineCallResult.UNKNOWN.name,
-                completedAt = settlement.completedAt,
-                queueOrder = dao.maximumQueueOrder() + 1,
-            )
-            if (settled) {
-                callMetricsRecorder.record(
-                    pending.attemptId,
-                    AppMode.OFFLINE,
-                    OfflineCallResult.UNKNOWN.name,
-                    null,
-                    pending.initiatedAt,
-                )
-            }
-            settled
+            settlePendingAsUnknownLocked(pending)
         }
+    }
+
+    suspend fun forceRecoverPendingCalls(): PendingCallRecoveryResult = withContext(Dispatchers.IO) {
+        checkUnlocked()
+        val initialCount = dao.pendingCalls().size
+        reconcilePending()
+        callStateCoordinator.serialized {
+            dao.pendingCalls().forEach { pending -> settlePendingAsUnknownLocked(pending) }
+        }
+        val remainingCount = dao.pendingCalls().size
+        PendingCallRecoveryResult(
+            recoveredCount = (initialCount - remainingCount).coerceAtLeast(0),
+            remainingCount = remainingCount,
+        )
     }
 
     suspend fun reconcilePending(): Int = withContext(Dispatchers.IO) {
@@ -444,6 +423,50 @@ class OfflineRepository(
             }
             completed
         }
+    }
+
+    private suspend fun settlePendingAsUnknownLocked(pending: OfflinePendingCallEntity): Boolean {
+        val contact = dao.contact(pending.contactId)
+        if (contact == null) {
+            dao.deletePendingCall(pending.attemptId)
+            return true
+        }
+        val now = clock()
+        val settlement = OfflineCallPolicy.settle(
+            result = OfflineCallResult.UNKNOWN,
+            attemptCount = contact.attemptCount,
+            maximumAttempts = maximumAttempts.value,
+            observedAt = now,
+        )
+        val settled = dao.settleAttempt(
+            pending = pending,
+            history = OfflineCallHistoryEntity(
+                attemptId = pending.attemptId,
+                contactId = pending.contactId,
+                encryptedPhone = pending.encryptedPhone,
+                encryptedName = contact.encryptedName,
+                phoneMasked = contact.phoneMasked,
+                result = OfflineCallResult.UNKNOWN.name,
+                startedAt = pending.initiatedAt,
+                durationSeconds = null,
+                observedAt = now,
+                systemCallLogId = null,
+            ),
+            state = settlement.state.name,
+            result = OfflineCallResult.UNKNOWN.name,
+            completedAt = settlement.completedAt,
+            queueOrder = dao.maximumQueueOrder() + 1,
+        )
+        if (settled) {
+            callMetricsRecorder.record(
+                pending.attemptId,
+                AppMode.OFFLINE,
+                OfflineCallResult.UNKNOWN.name,
+                null,
+                pending.initiatedAt,
+            )
+        }
+        return settled
     }
 
     suspend fun countCompletedBefore(days: Int): Int = withContext(Dispatchers.IO) {
