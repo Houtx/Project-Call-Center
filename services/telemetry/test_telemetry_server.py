@@ -4,6 +4,7 @@ import datetime as dt
 import http.client
 import json
 import re
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -68,8 +69,64 @@ class TelemetryServerTest(unittest.TestCase):
             first = database.publish_announcement("第一则公告", "请阅读第一则公告。")
             second = database.publish_announcement("第二则公告", "请阅读第二则公告。")
             self.assertEqual(1, first["id"])
+            self.assertEqual(1, first["revision"])
+            self.assertTrue(first["active"])
             self.assertEqual(second, database.latest_announcement())
-            self.assertEqual([second, first], database.announcements())
+            stored = database.announcements()
+            self.assertEqual([second["id"], first["id"]], [item["id"] for item in stored])
+            self.assertTrue(stored[0]["active"])
+            self.assertFalse(stored[1]["active"])
+
+            updated = database.update_announcement(second["id"], "第二则公告（修订）", "修订后的正文。")
+            self.assertIsNotNone(updated)
+            self.assertEqual(2, updated["revision"])
+            self.assertTrue(updated["active"])
+            self.assertEqual(updated, database.latest_announcement())
+            self.assertIsNone(database.update_announcement(999, "不存在", "不会保存"))
+            self.assertFalse(database.delete_announcement(999))
+            self.assertTrue(database.delete_announcement(second["id"]))
+            self.assertIsNone(database.latest_announcement())
+            self.assertFalse(database.announcements()[0]["active"])
+
+    def test_legacy_announcement_table_is_migrated_without_losing_data(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "telemetry.sqlite3"
+            with sqlite3.connect(path) as database:
+                database.executescript(
+                    """
+                    CREATE TABLE announcements (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        title TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        published_at TEXT NOT NULL
+                    );
+                    INSERT INTO announcements (title, content, published_at)
+                    VALUES ('旧公告一', '正文一', '2026-09-01T01:00:00Z');
+                    INSERT INTO announcements (title, content, published_at)
+                    VALUES ('旧公告二', '正文二', '2026-09-02T01:00:00Z');
+                    """
+                )
+
+            migrated = TelemetryDatabase(
+                path,
+                b"identifier-secret",
+                30,
+                encode_password("initial administrator password"),
+            )
+            items = migrated.announcements()
+            self.assertEqual([2, 1], [item["id"] for item in items])
+            self.assertEqual([True, False], [item["active"] for item in items])
+            self.assertEqual([1, 1], [item["revision"] for item in items])
+            self.assertEqual(items[0]["publishedAt"], items[0]["updatedAt"])
+
+            self.assertTrue(migrated.delete_announcement(2))
+            reopened = TelemetryDatabase(
+                path,
+                b"identifier-secret",
+                30,
+                encode_password("initial administrator password"),
+            )
+            self.assertIsNone(reopened.latest_announcement())
 
     def test_password_hash_round_trip(self) -> None:
         encoded = encode_password("correct horse battery staple")
@@ -242,6 +299,63 @@ class TelemetryServerTest(unittest.TestCase):
                 status, _, body = request("GET", "/admin/api/announcements", cookie=old_cookie)
                 self.assertEqual(200, status)
                 self.assertEqual([published], json.loads(body)["items"])
+
+                self.assertEqual(401, request(
+                    "PUT",
+                    f"/admin/api/announcements/{published['id']}",
+                    {"csrf": csrf, "title": "未授权", "content": "不能修改"},
+                )[0])
+                self.assertEqual(403, request(
+                    "DELETE",
+                    f"/admin/api/announcements/{published['id']}",
+                    {"csrf": "wrong"},
+                    old_cookie,
+                )[0])
+
+                status, _, body = request(
+                    "PUT",
+                    f"/admin/api/announcements/{published['id']}",
+                    {"csrf": csrf, "title": "服务通知（修订）", "content": "请重新阅读。"},
+                    old_cookie,
+                )
+                self.assertEqual(200, status)
+                updated_announcement = json.loads(body)
+                self.assertEqual(2, updated_announcement["revision"])
+                self.assertTrue(updated_announcement["active"])
+                self.assertEqual("服务通知（修订）", updated_announcement["title"])
+                self.assertEqual(updated_announcement, json.loads(request(
+                    "GET", "/api/app/v1/announcement/latest"
+                )[2]))
+
+                self.assertEqual(404, request(
+                    "PUT",
+                    "/admin/api/announcements/999",
+                    {"csrf": csrf, "title": "不存在", "content": "不会修改"},
+                    old_cookie,
+                )[0])
+                self.assertEqual(404, request(
+                    "DELETE",
+                    "/admin/api/announcements/999",
+                    {"csrf": csrf},
+                    old_cookie,
+                )[0])
+
+                status, _, body = request(
+                    "POST",
+                    "/admin/api/announcements",
+                    {"csrf": csrf, "title": "临时公告", "content": "删除后不恢复旧公告。"},
+                    old_cookie,
+                )
+                self.assertEqual(201, status)
+                latest = json.loads(body)
+                self.assertEqual(1, latest["revision"])
+                self.assertEqual(200, request(
+                    "DELETE",
+                    f"/admin/api/announcements/{latest['id']}",
+                    {"csrf": csrf},
+                    old_cookie,
+                )[0])
+                self.assertEqual(204, request("GET", "/api/app/v1/announcement/latest")[0])
 
                 status, headers, body = request(
                     "POST",

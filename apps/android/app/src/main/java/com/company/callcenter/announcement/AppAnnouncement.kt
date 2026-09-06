@@ -18,7 +18,13 @@ internal data class AppAnnouncement(
     val title: String,
     val content: String,
     val publishedAt: String,
+    val revision: Long = 1,
 )
+
+internal object AnnouncementReadPolicy {
+    fun isRead(announcement: AppAnnouncement, storedId: Long, storedRevision: Long): Boolean =
+        storedId == announcement.id && storedRevision == announcement.revision
+}
 
 internal object AnnouncementEndpointPolicy {
     fun fromTelemetryEndpoint(telemetryEndpoint: String): String? {
@@ -53,17 +59,24 @@ internal object AppAnnouncementParser {
         } catch (failure: RuntimeException) {
             throw IOException("公告内容格式无效", failure)
         }
-        val id = root.get("id")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }
-            ?.let { runCatching { it.asBigDecimal.longValueExact() }.getOrNull() }
-            ?.takeIf { it > 0 }
-            ?: throw IOException("公告编号无效")
+        val id = root.positiveLong("id") ?: throw IOException("公告编号无效")
+        val revision = if (root.has("revision")) {
+            root.positiveLong("revision") ?: throw IOException("公告修订号无效")
+        } else {
+            1L
+        }
         val title = root.requiredText("title", 80)
         val content = root.requiredText("content", 4_000)
         val publishedAt = root.requiredText("publishedAt", 64)
         runCatching { Instant.parse(publishedAt) }
             .getOrElse { throw IOException("公告发布时间无效", it) }
-        return AppAnnouncement(id, title, content, publishedAt)
+        return AppAnnouncement(id, title, content, publishedAt, revision)
     }
+
+    private fun com.google.gson.JsonObject.positiveLong(name: String): Long? =
+        get(name)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }
+            ?.let { runCatching { it.asBigDecimal.longValueExact() }.getOrNull() }
+            ?.takeIf { it > 0 }
 
     private fun com.google.gson.JsonObject.requiredText(name: String, maximumLength: Int): String {
         val value = get(name)
@@ -98,7 +111,9 @@ internal class AppAnnouncementManager(
                     if (!response.isSuccessful) throw IOException("公告接口返回 HTTP ${response.code}")
                     val body = response.body?.string() ?: throw IOException("公告内容为空")
                     val announcement = AppAnnouncementParser.parse(body)
-                    if (preferences.getLong(LAST_READ_ID_KEY, 0L) == announcement.id) null else announcement
+                    val storedId = preferences.getLong(LAST_READ_ID_KEY, 0L)
+                    val storedRevision = preferences.getLong(LAST_READ_REVISION_KEY, 1L)
+                    if (AnnouncementReadPolicy.isRead(announcement, storedId, storedRevision)) null else announcement
                 }
             }
         } catch (cancelled: CancellationException) {
@@ -107,11 +122,15 @@ internal class AppAnnouncementManager(
     }
 
     fun markRead(announcement: AppAnnouncement): Boolean =
-        preferences.edit().putLong(LAST_READ_ID_KEY, announcement.id).commit()
+        preferences.edit()
+            .putLong(LAST_READ_ID_KEY, announcement.id)
+            .putLong(LAST_READ_REVISION_KEY, announcement.revision)
+            .commit()
 
     private companion object {
         const val PREFERENCES_NAME = "app_announcements"
         const val LAST_READ_ID_KEY = "last_read_announcement_id"
+        const val LAST_READ_REVISION_KEY = "last_read_announcement_revision"
 
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .cache(null)

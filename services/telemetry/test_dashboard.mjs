@@ -66,6 +66,9 @@ const announcements = {
     title: '服务通知',
     content: '请所有坐席阅读。',
     publishedAt: '2026-08-20T05:00:00Z',
+    revision: 2,
+    updatedAt: '2026-08-20T06:00:00Z',
+    active: true,
   }],
 };
 
@@ -84,8 +87,26 @@ dom.window.fetch = async (url, options = {}) => {
         title: options.body.get('title'),
         content: options.body.get('content'),
         publishedAt: '2026-08-21T05:00:00Z',
+        revision: 1,
+        updatedAt: '2026-08-21T05:00:00Z',
+        active: true,
       }),
     };
+  }
+  if (url === '/admin/api/announcements/3' && options.method === 'PUT') {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ...announcements.items[0],
+        title: options.body.get('title'),
+        content: options.body.get('content'),
+        revision: 3,
+      }),
+    };
+  }
+  if (url === '/admin/api/announcements/3' && options.method === 'DELETE') {
+    return { ok: true, status: 200, json: async () => ({ deleted: true, id: 3 }) };
   }
   return {
     ok: true,
@@ -123,6 +144,8 @@ assert.equal(document.querySelector('#announcement-submit').textContent, '发布
 assert.equal(document.querySelectorAll('#announcements tr').length, 1);
 assert.match(document.querySelector('#announcements').textContent, /服务通知/);
 assert.match(document.querySelector('#announcements').textContent, /请所有坐席阅读/);
+assert.equal(document.querySelector('.announcement-status-tag').textContent, '当前');
+assert.equal(document.querySelectorAll('.announcement-actions button').length, 2);
 
 const trendBar = document.querySelector('.trend-svg rect.bar');
 assert.equal(trendBar.getAttribute('tabindex'), '0');
@@ -195,6 +218,37 @@ assert.equal(announcementRequest.options.credentials, 'same-origin');
 assert.equal(announcementRequest.options.body.get('csrf'), '__CSRF_TOKEN__');
 assert.equal(announcementRequest.options.body.get('title'), '版本更新');
 assert.equal(announcementRequest.options.body.get('content'), '请重新启动 APP。');
+
+const editDialog = document.querySelector('#announcement-edit-dialog');
+editDialog.showModal = () => { editDialog.open = true; };
+editDialog.close = () => { editDialog.open = false; };
+document.querySelector('.announcement-actions button.secondary').click();
+assert.equal(editDialog.open, true);
+assert.equal(document.querySelector('#announcement-edit-title').value, '服务通知');
+assert.equal(document.querySelector('#announcement-edit-content').value, '请所有坐席阅读。');
+assert.match(document.querySelector('#announcement-edit-note').textContent, /再次弹出/);
+document.querySelector('#announcement-edit-title').value = '服务通知（修订）';
+document.querySelector('#announcement-edit-content').value = '请重新阅读。';
+document.querySelector('#announcement-edit-form').dispatchEvent(new dom.window.Event('submit', {
+  bubbles: true,
+  cancelable: true,
+}));
+await new Promise((resolve) => setTimeout(resolve, 0));
+const editRequest = fetchCalls.find((call) => call.options.method === 'PUT');
+assert.equal(editRequest.url, '/admin/api/announcements/3');
+assert.equal(editRequest.options.credentials, 'same-origin');
+assert.equal(editRequest.options.body.get('csrf'), '__CSRF_TOKEN__');
+assert.equal(editRequest.options.body.get('title'), '服务通知（修订）');
+assert.equal(editRequest.options.body.get('content'), '请重新阅读。');
+assert.equal(editDialog.open, false);
+
+document.querySelector('.announcement-actions button.danger').click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+const deleteRequest = fetchCalls.find((call) => call.options.method === 'DELETE');
+assert.equal(deleteRequest.url, '/admin/api/announcements/3');
+assert.equal(deleteRequest.options.credentials, 'same-origin');
+assert.equal(deleteRequest.options.body.get('csrf'), '__CSRF_TOKEN__');
+assert.equal(document.querySelector('#announcement-status').textContent, '公告 #3 已删除');
 assert.deepEqual(fetchCalls.slice(0, 3).map((call) => call.url), [
   '/admin/api/dashboard?days=30',
   '/admin/api/announcements',

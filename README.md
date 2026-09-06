@@ -330,7 +330,7 @@ Android 模拟器连接在线版的本机 API 时使用 `http://10.0.2.2:8800/ap
 
 正式 APK 与源码版本统一发布在本仓库的 [GitHub Releases](https://github.com/Houtx/Project-Call-Center/releases)。APK 只作为 Release 资产发布，不提交进 Git 历史；每个版本同时提供 APK 和 `release.json`。APP 自动更新使用 `https://call.haoyunqiankun.com`，GitHub Release 作为公开下载和备用分发入口。
 
-`call.haoyunqiankun.com` 首页同时提供独立的运营统计和公告管理端。配置统计地址的公司内部 APP 默认开启匿名统计；`0.7.2` 会把旧版本中已经关闭的统计重新开启一次，之后关闭时需要输入手机当天日期组成的 8 位管理口令（`yyyyMMdd`）。每天最多上报一次匿名活跃、版本、模式、国家/时区和外呼数量汇总。管理员发布新公告后，APP 冷启动会显示一次并要求前台阅读至少 10 秒。该服务不接收号码、姓名、坐席、SIM、导入文件或逐通记录，统计 IP 仅保留 HMAC 和脱敏网段。
+`call.haoyunqiankun.com` 首页同时提供独立的运营统计和公告管理端。配置统计地址的公司内部 APP 默认开启匿名统计；`0.7.2` 会把旧版本中已经关闭的统计重新开启一次，之后关闭时需要输入手机当天日期组成的 8 位管理口令（`yyyyMMdd`）。每天最多上报一次匿名活跃、版本、模式、国家/时区和外呼数量汇总。管理员可发布、编辑和删除终端公告；APP 冷启动会显示未读公告并要求前台阅读至少 10 秒，当前公告修改后会按新修订再次显示。该服务不接收号码、姓名、坐席、SIM、导入文件或逐通记录，统计 IP 仅保留 HMAC 和脱敏网段。
 
 Release APK 必须使用长期保管的正式签名证书，并在构建时将更新清单和下载基地址指向生产更新服务。每次发布先上传完全相同的 APK 和清单到 GitHub Release，再由生产更新服务器直接从该 Release 拉取并校验，无需从本机上传 APK。详细要求见 [Android 更新服务指南](ANDROID_UPDATE_SERVER_GUIDE.md)、[Android 设备验证](docs/android-device-validation.md)、[开发指南](DEVELOPMENT_GUIDE.md) 和 [运维指南](OPERATIONS_GUIDE.md)。
 

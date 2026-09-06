@@ -11,6 +11,9 @@ button, input, select, textarea { font: inherit; letter-spacing: 0; }
 button, .button-link { border: 0; border-radius: 6px; background: #176b45; color: #fff; min-height: 40px; padding: 0 16px; cursor: pointer; }
 button:hover, .button-link:hover { background: #115739; }
 button.secondary { background: #e7ece9; color: #25332b; }
+button.danger { background: #fff0ee; color: #9b261c; }
+button.danger:hover { background: #fbded9; }
+button:disabled { cursor: not-allowed; opacity: .58; }
 input, select, textarea { min-height: 42px; border: 1px solid #bac5bf; border-radius: 6px; background: #fff; padding: 8px 11px; color: #18201c; }
 textarea { resize: vertical; line-height: 1.6; }
 input:focus, select:focus, textarea:focus, button:focus-visible, .button-link:focus-visible { outline: 3px solid rgba(23,107,69,.2); outline-offset: 1px; border-color: #176b45; }
@@ -36,6 +39,12 @@ dialog::backdrop { background: rgba(24,32,28,.36); }
 .password-form h2 { margin-bottom: 8px; }
 .password-form label { margin-top: 4px; font-size: 13px; font-weight: 650; }
 .password-form .form-error { margin: 8px 0 0; }
+.announcement-edit-form { display: grid; width: min(620px, calc(100vw - 32px)); gap: 8px; padding: 24px; }
+.announcement-edit-form h2 { margin-bottom: 0; }
+.announcement-edit-form label { margin-top: 6px; font-size: 13px; font-weight: 650; }
+.announcement-edit-form textarea { min-height: 180px; }
+.announcement-edit-form .form-footer { justify-content: flex-end; }
+.announcement-edit-form .form-error { margin: 8px 0 0; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 .button-link { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
 .apk-dialog-panel { width: min(560px, calc(100vw - 32px)); padding: 24px; }
@@ -65,6 +74,10 @@ dialog::backdrop { background: rgba(24,32,28,.36); }
 .form-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .form-status { margin: 0; border-left: 3px solid #176b45; background: #eaf3ee; color: #24513b; padding: 9px 11px; font-size: 13px; }
 .announcement-content-cell { max-width: 640px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; }
+.announcement-status-tag { display: inline-block; min-width: 42px; border-radius: 4px; padding: 3px 7px; text-align: center; background: #edf1ef; color: #5e6a64; }
+.announcement-status-tag.active { background: #e5f3eb; color: #155b3c; font-weight: 650; }
+.announcement-actions { display: flex; gap: 6px; }
+.announcement-actions button { min-height: 34px; padding: 0 11px; white-space: nowrap; }
 .section-heading { display: flex; justify-content: space-between; align-items: start; gap: 16px; }
 .section-heading p { margin-bottom: 0; }
 .trend-chart { height: 252px; margin-top: 18px; overflow-x: auto; }
@@ -118,4 +131,7 @@ th { color: #59675f; background: #f8faf9; font-weight: 650; }
   .announcement-form { grid-template-columns: 1fr; }
   .announcement-form label { padding-top: 2px; }
   .announcement-form .form-footer, .announcement-form .form-status { grid-column: 1; }
+  .announcement-edit-form { padding: 20px; }
+  .announcement-edit-form .dialog-actions { flex-direction: column-reverse; }
+  .announcement-edit-form .dialog-actions button { width: 100%; }
 }

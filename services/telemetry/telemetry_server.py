@@ -36,6 +36,7 @@ TIMEZONE_PATTERN = re.compile(r"^[A-Za-z0-9_+./:-]{1,64}$")
 COUNTRY_PATTERN = re.compile(r"^[A-Z]{2}$")
 ANNOUNCEMENT_TITLE_MAX_LENGTH = 80
 ANNOUNCEMENT_CONTENT_MAX_LENGTH = 2_000
+ANNOUNCEMENT_ADMIN_PATH_PATTERN = re.compile(r"^/admin/api/announcements/([1-9][0-9]*)$")
 LEGACY_PAYLOAD_KEYS = frozenset({"a", "b", "c", "d", "e", "f", "g"})
 LEGACY_METRIC_KEYS = LEGACY_PAYLOAD_KEYS
 
@@ -368,10 +369,30 @@ class TelemetryDatabase:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     title TEXT NOT NULL,
                     content TEXT NOT NULL,
-                    published_at TEXT NOT NULL
+                    published_at TEXT NOT NULL,
+                    revision INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL,
+                    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1))
                 );
                 CREATE INDEX IF NOT EXISTS announcements_published_at ON announcements(published_at DESC);
                 """
+            )
+            announcement_columns = {
+                row["name"] for row in db.execute("PRAGMA table_info(announcements)").fetchall()
+            }
+            if "revision" not in announcement_columns:
+                db.execute("ALTER TABLE announcements ADD COLUMN revision INTEGER NOT NULL DEFAULT 1")
+            if "updated_at" not in announcement_columns:
+                db.execute("ALTER TABLE announcements ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
+                db.execute("UPDATE announcements SET updated_at = published_at WHERE updated_at = ''")
+            if "active" not in announcement_columns:
+                db.execute("ALTER TABLE announcements ADD COLUMN active INTEGER NOT NULL DEFAULT 0")
+                db.execute(
+                    "UPDATE announcements SET active = 1 WHERE id = (SELECT MAX(id) FROM announcements)"
+                )
+            db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS announcements_one_active "
+                "ON announcements(active) WHERE active = 1"
             )
             db.execute(
                 """
@@ -416,18 +437,26 @@ class TelemetryDatabase:
             "title": row["title"],
             "content": row["content"],
             "publishedAt": row["published_at"],
+            "revision": row["revision"],
+            "updatedAt": row["updated_at"],
+            "active": bool(row["active"]),
         }
 
     def publish_announcement(self, title: Any, content: Any) -> dict[str, Any]:
         normalized_title, normalized_content = validate_announcement(title, content)
         published_at = iso_timestamp()
         with self.connection() as db:
+            db.execute("UPDATE announcements SET active = 0 WHERE active = 1")
             cursor = db.execute(
-                "INSERT INTO announcements (title, content, published_at) VALUES (?, ?, ?)",
-                (normalized_title, normalized_content, published_at),
+                """
+                INSERT INTO announcements (
+                    title, content, published_at, revision, updated_at, active
+                ) VALUES (?, ?, ?, 1, ?, 1)
+                """,
+                (normalized_title, normalized_content, published_at, published_at),
             )
             row = db.execute(
-                "SELECT id, title, content, published_at FROM announcements WHERE id = ?",
+                "SELECT * FROM announcements WHERE id = ?",
                 (cursor.lastrowid,),
             ).fetchone()
         if row is None:
@@ -437,17 +466,38 @@ class TelemetryDatabase:
     def latest_announcement(self) -> dict[str, Any] | None:
         with self.connection() as db:
             row = db.execute(
-                "SELECT id, title, content, published_at FROM announcements ORDER BY id DESC LIMIT 1"
+                "SELECT * FROM announcements WHERE active = 1 LIMIT 1"
             ).fetchone()
         return self.announcement_payload(row) if row is not None else None
 
     def announcements(self, limit: int = 20) -> list[dict[str, Any]]:
         with self.connection() as db:
             rows = db.execute(
-                "SELECT id, title, content, published_at FROM announcements ORDER BY id DESC LIMIT ?",
+                "SELECT * FROM announcements ORDER BY id DESC LIMIT ?",
                 (max(1, min(100, limit)),),
             ).fetchall()
         return [self.announcement_payload(row) for row in rows]
+
+    def update_announcement(self, announcement_id: int, title: Any, content: Any) -> dict[str, Any] | None:
+        normalized_title, normalized_content = validate_announcement(title, content)
+        with self.connection() as db:
+            cursor = db.execute(
+                """
+                UPDATE announcements
+                SET title = ?, content = ?, revision = revision + 1, updated_at = ?
+                WHERE id = ?
+                """,
+                (normalized_title, normalized_content, iso_timestamp(), announcement_id),
+            )
+            if cursor.rowcount != 1:
+                return None
+            row = db.execute("SELECT * FROM announcements WHERE id = ?", (announcement_id,)).fetchone()
+        return self.announcement_payload(row) if row is not None else None
+
+    def delete_announcement(self, announcement_id: int) -> bool:
+        with self.connection() as db:
+            cursor = db.execute("DELETE FROM announcements WHERE id = ?", (announcement_id,))
+        return cursor.rowcount == 1
 
     def ingest(self, payload: dict[str, Any], client_ip: str, country_code: str) -> None:
         now = iso_timestamp()
@@ -665,6 +715,8 @@ class TelemetryHandler(BaseHTTPRequestHandler):
     def send_common_headers(self, content_type: str, length: int) -> None:
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(length))
+        if self.close_connection:
+            self.send_header("Connection", "close")
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
@@ -748,6 +800,12 @@ class TelemetryHandler(BaseHTTPRequestHandler):
     def require_session(self) -> tuple[int, str] | None:
         session = self.session_payload()
         if session is None:
+            # A rejected write may still have an unread body; close the HTTP/1.1
+            # connection so those bytes cannot be parsed as the next request.
+            try:
+                self.close_connection = int(self.headers.get("Content-Length", "0")) > 0
+            except ValueError:
+                self.close_connection = True
             self.json_response(HTTPStatus.UNAUTHORIZED, {"message": "请先登录"})
         return session
 
@@ -871,6 +929,20 @@ class TelemetryHandler(BaseHTTPRequestHandler):
             return
         self.respond(HTTPStatus.NOT_FOUND, b"not found\n", "text/plain; charset=utf-8")
 
+    def do_PUT(self) -> None:
+        match = ANNOUNCEMENT_ADMIN_PATH_PATTERN.fullmatch(urllib.parse.urlsplit(self.path).path)
+        if match is None:
+            self.respond(HTTPStatus.NOT_FOUND, b"not found\n", "text/plain; charset=utf-8")
+            return
+        self.handle_update_announcement(int(match.group(1)))
+
+    def do_DELETE(self) -> None:
+        match = ANNOUNCEMENT_ADMIN_PATH_PATTERN.fullmatch(urllib.parse.urlsplit(self.path).path)
+        if match is None:
+            self.respond(HTTPStatus.NOT_FOUND, b"not found\n", "text/plain; charset=utf-8")
+            return
+        self.handle_delete_announcement(int(match.group(1)))
+
     def handle_telemetry(self) -> None:
         if self.headers.get_content_type() != "application/json":
             self.json_response(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, {"message": "Content-Type must be application/json"})
@@ -951,20 +1023,26 @@ class TelemetryHandler(BaseHTTPRequestHandler):
             return
         self.json_session_response(HTTPStatus.OK, {"changed": True}, session_version)
 
-    def handle_publish_announcement(self) -> None:
+    def read_authorized_admin_form(self) -> dict[str, list[str]] | None:
         session = self.require_session()
         if session is None:
-            return
+            return None
         if self.headers.get_content_type() != "application/x-www-form-urlencoded":
             self.json_response(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, {"message": "请求格式无效"})
-            return
+            return None
         try:
             values = urllib.parse.parse_qs(self.read_body().decode(), keep_blank_values=True)
         except (ValueError, UnicodeDecodeError):
             self.json_response(HTTPStatus.BAD_REQUEST, {"message": "请求格式无效"})
-            return
+            return None
         if not hmac.compare_digest(values.get("csrf", [""])[0], session[1]):
             self.json_response(HTTPStatus.FORBIDDEN, {"message": "页面已过期，请刷新后重试"})
+            return None
+        return values
+
+    def handle_publish_announcement(self) -> None:
+        values = self.read_authorized_admin_form()
+        if values is None:
             return
         try:
             announcement = self.app.database.publish_announcement(
@@ -975,6 +1053,33 @@ class TelemetryHandler(BaseHTTPRequestHandler):
             self.json_response(HTTPStatus.BAD_REQUEST, {"message": str(error)})
             return
         self.json_response(HTTPStatus.CREATED, announcement)
+
+    def handle_update_announcement(self, announcement_id: int) -> None:
+        values = self.read_authorized_admin_form()
+        if values is None:
+            return
+        try:
+            announcement = self.app.database.update_announcement(
+                announcement_id,
+                values.get("title", [""])[0],
+                values.get("content", [""])[0],
+            )
+        except ValueError as error:
+            self.json_response(HTTPStatus.BAD_REQUEST, {"message": str(error)})
+            return
+        if announcement is None:
+            self.json_response(HTTPStatus.NOT_FOUND, {"message": "公告不存在"})
+            return
+        self.json_response(HTTPStatus.OK, announcement)
+
+    def handle_delete_announcement(self, announcement_id: int) -> None:
+        values = self.read_authorized_admin_form()
+        if values is None:
+            return
+        if not self.app.database.delete_announcement(announcement_id):
+            self.json_response(HTTPStatus.NOT_FOUND, {"message": "公告不存在"})
+            return
+        self.json_response(HTTPStatus.OK, {"deleted": True, "id": announcement_id})
 
 
 class TelemetryServer(ThreadingHTTPServer):

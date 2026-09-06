@@ -246,27 +246,51 @@ function renderRecent(rows) {
   byId('recent').replaceChildren(...nodes);
 }
 
+let announcementsById = new Map();
+
+function announcementCell(value, className = '') {
+  const td = document.createElement('td');
+  td.textContent = value;
+  if (className) td.className = className;
+  return td;
+}
+
 function renderAnnouncements(rows) {
+  announcementsById = new Map(rows.map((announcement) => [Number(announcement.id), announcement]));
   const nodes = rows.map((announcement) => {
     const tr = document.createElement('tr');
-    const values = [
-      dateTime.format(new Date(announcement.publishedAt)),
-      `#${announcement.id}`,
-      announcement.title,
-      announcement.content,
-    ];
-    values.forEach((value, index) => {
-      const td = document.createElement('td');
-      td.textContent = value;
-      if (index === 3) td.className = 'announcement-content-cell';
-      tr.append(td);
-    });
+    const statusCell = document.createElement('td');
+    const status = document.createElement('span');
+    status.className = `announcement-status-tag${announcement.active ? ' active' : ''}`;
+    status.textContent = announcement.active ? '当前' : '历史';
+    statusCell.append(status);
+    const actions = document.createElement('td');
+    actions.className = 'announcement-actions';
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'secondary';
+    edit.textContent = '编辑';
+    edit.addEventListener('click', () => openAnnouncementEditor(Number(announcement.id)));
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'danger';
+    remove.textContent = '删除';
+    remove.addEventListener('click', () => deleteAnnouncement(Number(announcement.id), remove));
+    actions.append(edit, remove);
+    tr.append(
+      announcementCell(dateTime.format(new Date(announcement.publishedAt))),
+      announcementCell(`#${announcement.id}`),
+      statusCell,
+      announcementCell(announcement.title),
+      announcementCell(announcement.content, 'announcement-content-cell'),
+      actions,
+    );
     return tr;
   });
   if (!nodes.length) {
     const tr = document.createElement('tr');
     const td = document.createElement('td');
-    td.colSpan = 4;
+    td.colSpan = 6;
     td.className = 'muted';
     td.textContent = '尚未发布公告';
     tr.append(td);
@@ -470,6 +494,63 @@ const announcementForm = byId('announcement-form');
 const announcementContent = byId('announcement-content');
 const announcementSubmit = byId('announcement-submit');
 const announcementStatus = byId('announcement-status');
+const announcementEditDialog = byId('announcement-edit-dialog');
+const announcementEditForm = byId('announcement-edit-form');
+const announcementEditContent = byId('announcement-edit-content');
+const announcementEditError = byId('announcement-edit-error');
+const announcementEditSubmit = byId('announcement-edit-submit');
+let editingAnnouncementId = null;
+
+function showAnnouncementStatus(message, error = false) {
+  announcementStatus.textContent = message;
+  announcementStatus.className = error ? 'form-error' : 'form-status';
+  announcementStatus.hidden = false;
+}
+
+function openAnnouncementEditor(announcementId) {
+  const announcement = announcementsById.get(announcementId);
+  if (!announcement) return;
+  editingAnnouncementId = announcementId;
+  announcementEditForm.reset();
+  byId('announcement-edit-title').value = announcement.title;
+  announcementEditContent.value = announcement.content;
+  byId('announcement-edit-count').textContent = `${announcement.content.length} / 2000`;
+  byId('announcement-edit-note').textContent = announcement.active
+    ? '这是当前公告。保存后，已经阅读过的终端会在下次冷启动时再次弹出。'
+    : '这是历史公告。修改内容不会发送给终端。';
+  announcementEditError.hidden = true;
+  announcementEditDialog.showModal();
+  byId('announcement-edit-title').focus();
+}
+
+async function deleteAnnouncement(announcementId, button) {
+  const announcement = announcementsById.get(announcementId);
+  if (!announcement) return;
+  const message = announcement.active
+    ? '删除当前公告后，终端将不再收到这条公告，历史公告不会自动恢复。确认删除吗？'
+    : '确认删除这条历史公告吗？';
+  if (!window.confirm(message)) return;
+  button.disabled = true;
+  button.textContent = '删除中';
+  try {
+    const csrf = announcementForm.elements.namedItem('csrf').value;
+    const response = await fetch(`/admin/api/announcements/${encodeURIComponent(announcementId)}`, {
+      method: 'DELETE',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+      body: new URLSearchParams({ csrf }),
+    });
+    if (response.status === 401) { location.href = '/login'; return; }
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.message || `HTTP ${response.status}`);
+    showAnnouncementStatus(`公告 #${announcementId} 已删除`);
+    await loadAnnouncements();
+  } catch (error) {
+    showAnnouncementStatus(`删除失败：${error.message}`, true);
+    button.disabled = false;
+    button.textContent = '删除';
+  }
+}
 
 announcementContent.addEventListener('input', () => {
   byId('announcement-count').textContent = `${announcementContent.value.length} / 2000`;
@@ -492,17 +573,57 @@ announcementForm.addEventListener('submit', async (event) => {
     if (!response.ok) throw new Error(result.message || `HTTP ${response.status}`);
     announcementForm.reset();
     byId('announcement-count').textContent = '0 / 2000';
-    announcementStatus.className = 'form-status';
-    announcementStatus.textContent = `公告 #${result.id} 已发布`;
-    announcementStatus.hidden = false;
+    showAnnouncementStatus(`公告 #${result.id} 已发布`);
     await loadAnnouncements();
   } catch (error) {
-    announcementStatus.textContent = `发布失败：${error.message}`;
-    announcementStatus.className = 'form-error';
-    announcementStatus.hidden = false;
+    showAnnouncementStatus(`发布失败：${error.message}`, true);
   } finally {
     announcementSubmit.disabled = false;
     announcementSubmit.textContent = '发布新公告';
+  }
+});
+
+announcementEditContent.addEventListener('input', () => {
+  byId('announcement-edit-count').textContent = `${announcementEditContent.value.length} / 2000`;
+});
+byId('announcement-edit-cancel').addEventListener('click', () => announcementEditDialog.close());
+announcementEditDialog.addEventListener('click', (event) => {
+  if (event.target === announcementEditDialog) announcementEditDialog.close();
+});
+announcementEditForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const announcement = announcementsById.get(editingAnnouncementId);
+  if (!announcement) {
+    announcementEditDialog.close();
+    showAnnouncementStatus('该公告已不存在，请刷新后重试', true);
+    return;
+  }
+  if (
+    announcement.active &&
+    !window.confirm('保存当前公告后，已经阅读过的终端会在下次冷启动时再次弹出。确认保存吗？')
+  ) return;
+  announcementEditError.hidden = true;
+  announcementEditSubmit.disabled = true;
+  announcementEditSubmit.textContent = '保存中';
+  try {
+    const response = await fetch(`/admin/api/announcements/${encodeURIComponent(editingAnnouncementId)}`, {
+      method: 'PUT',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+      body: new URLSearchParams(new FormData(announcementEditForm)),
+    });
+    if (response.status === 401) { location.href = '/login'; return; }
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.message || `HTTP ${response.status}`);
+    announcementEditDialog.close();
+    showAnnouncementStatus(`公告 #${result.id} 已更新`);
+    await loadAnnouncements();
+  } catch (error) {
+    announcementEditError.textContent = `保存失败：${error.message}`;
+    announcementEditError.hidden = false;
+  } finally {
+    announcementEditSubmit.disabled = false;
+    announcementEditSubmit.textContent = '保存修改';
   }
 });
 
