@@ -60,14 +60,44 @@ const release = {
   sha256: '33de6f5ed45d78a0db138065abcb09b641ca65ac5a29aaef0b3c18af7cb8fd66',
   sizeBytes: 2228562,
 };
+const announcements = {
+  items: [{
+    id: 3,
+    title: '服务通知',
+    content: '请所有坐席阅读。',
+    publishedAt: '2026-08-20T05:00:00Z',
+  }],
+};
 
 const styledHtml = html.replace('<link rel="stylesheet" href="/assets/app.css">', `<style>${css}</style>`);
 const dom = new JSDOM(styledHtml, { runScripts: 'outside-only', url: 'https://call.example.test/admin' });
 const fetchCalls = [];
-dom.window.fetch = async (url) => {
-  fetchCalls.push(url);
-  return { ok: true, status: 200, json: async () => url === '/release.json' ? release : sample };
+dom.window.confirm = () => true;
+dom.window.fetch = async (url, options = {}) => {
+  fetchCalls.push({ url, options });
+  if (url === '/admin/api/announcements' && options.method === 'POST') {
+    return {
+      ok: true,
+      status: 201,
+      json: async () => ({
+        id: 4,
+        title: options.body.get('title'),
+        content: options.body.get('content'),
+        publishedAt: '2026-08-21T05:00:00Z',
+      }),
+    };
+  }
+  return {
+    ok: true,
+    status: 200,
+    json: async () => url === '/release.json'
+      ? release
+      : url === '/admin/api/announcements'
+        ? announcements
+        : sample,
+  };
 };
+const dashboardFetch = dom.window.fetch;
 dom.window.eval(qrScript);
 dom.window.eval(script);
 await new Promise((resolve) => setTimeout(resolve, 0));
@@ -89,6 +119,10 @@ assert.equal(dom.window.getComputedStyle(document.querySelector('#loading')).dis
 assert.equal(document.querySelector('#password-open').textContent, '修改密码');
 assert.equal(document.querySelectorAll('#password-dialog input[type="password"]').length, 3);
 assert.equal(document.querySelector('#apk-open').textContent, '下载最新 APK');
+assert.equal(document.querySelector('#announcement-submit').textContent, '发布新公告');
+assert.equal(document.querySelectorAll('#announcements tr').length, 1);
+assert.match(document.querySelector('#announcements').textContent, /服务通知/);
+assert.match(document.querySelector('#announcements').textContent, /请所有坐席阅读/);
 
 const trendBar = document.querySelector('.trend-svg rect.bar');
 assert.equal(trendBar.getAttribute('tabindex'), '0');
@@ -138,6 +172,7 @@ await new Promise((resolve) => setTimeout(resolve, 0));
 assert.equal(document.querySelector('#apk-content').hidden, true);
 assert.equal(document.querySelector('#apk-error').hidden, false);
 assert.equal(document.querySelector('#apk-error-message').textContent, '最新版本清单内容无效');
+dom.window.fetch = dashboardFetch;
 
 document.querySelector('#new-password').value = 'replacement password';
 document.querySelector('#confirm-password').value = 'different password';
@@ -145,6 +180,25 @@ document.querySelector('#password-form').dispatchEvent(new dom.window.Event('sub
 await new Promise((resolve) => setTimeout(resolve, 0));
 assert.equal(document.querySelector('#password-error').textContent, '两次输入的新密码不一致');
 assert.equal(document.querySelector('#password-error').hidden, false);
-assert.deepEqual(fetchCalls, ['/admin/api/dashboard?days=30', '/release.json']);
+document.querySelector('#announcement-title').value = '版本更新';
+document.querySelector('#announcement-content').value = '请重新启动 APP。';
+document.querySelector('#announcement-form').dispatchEvent(new dom.window.Event('submit', {
+  bubbles: true,
+  cancelable: true,
+}));
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(document.querySelector('#announcement-status').textContent, '公告 #4 已发布');
+assert.equal(document.querySelector('#announcement-submit').disabled, false);
+const announcementRequest = fetchCalls.find((call) => call.options.method === 'POST');
+assert.equal(announcementRequest.url, '/admin/api/announcements');
+assert.equal(announcementRequest.options.credentials, 'same-origin');
+assert.equal(announcementRequest.options.body.get('csrf'), '__CSRF_TOKEN__');
+assert.equal(announcementRequest.options.body.get('title'), '版本更新');
+assert.equal(announcementRequest.options.body.get('content'), '请重新启动 APP。');
+assert.deepEqual(fetchCalls.slice(0, 3).map((call) => call.url), [
+  '/admin/api/dashboard?days=30',
+  '/admin/api/announcements',
+  '/release.json',
+]);
 
 console.log('Dashboard DOM rendering passed');

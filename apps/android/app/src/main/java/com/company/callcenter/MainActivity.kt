@@ -15,6 +15,8 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
+import com.company.callcenter.announcement.AppAnnouncement
+import com.company.callcenter.announcement.AppAnnouncementManager
 import com.company.callcenter.ui.AgentApp
 import com.company.callcenter.ui.AgentViewModel
 import com.company.callcenter.ui.AgentViewModelFactory
@@ -23,6 +25,8 @@ import com.company.callcenter.ui.CallCenterTheme
 import com.company.callcenter.ui.OfflineAgentApp
 import com.company.callcenter.ui.OfflineViewModel
 import com.company.callcenter.ui.OfflineViewModelFactory
+import com.company.callcenter.ui.StartupAnnouncementGate
+import com.company.callcenter.ui.StartupAnnouncementDialog
 import com.company.callcenter.data.AppMode
 import com.company.callcenter.data.DialSource
 import com.company.callcenter.data.offline.OfflineDialAccessPolicy
@@ -46,7 +50,10 @@ class MainActivity : ComponentActivity() {
     private val permissionsReady = mutableStateOf(false)
     private val updateState = MutableStateFlow<StartupUpdateState>(StartupUpdateState.Checking)
     private val updateManager by lazy { AppUpdateManager(applicationContext) }
+    private val announcementManager by lazy { AppAnnouncementManager(applicationContext) }
     private val appContainer by lazy { (application as CallCenterApplication).container }
+    private val announcement = mutableStateOf<AppAnnouncement?>(null)
+    private val announcementCheckFinished = mutableStateOf(false)
     private val viewModel: AgentViewModel by viewModels {
         AgentViewModelFactory(
             appContainer.repository,
@@ -64,6 +71,8 @@ class MainActivity : ComponentActivity() {
         )
     }
     private var updateJob: Job? = null
+    private var announcementCheckStarted = false
+    private var applicationOperationsStarted = false
     private var dialCollectorStarted = false
     private var pendingRecordingAuthorization: com.company.callcenter.data.DialAuthorization? = null
     private var backgroundLockJob: Job? = null
@@ -76,7 +85,7 @@ class MainActivity : ComponentActivity() {
         permissionsReady.value = requiredPermissionsGranted()
         viewModel.refreshSimConfiguration()
         offlineViewModel.refreshSimConfiguration()
-        if (permissionsReady.value && updateState.value == StartupUpdateState.Ready) {
+        if (permissionsReady.value && applicationOperationsStarted) {
             when (appContainer.appModeStore.mode.value) {
                 AppMode.ONLINE -> viewModel.refresh()
                 AppMode.OFFLINE -> offlineViewModel.refresh()
@@ -112,7 +121,11 @@ class MainActivity : ComponentActivity() {
             val appMode = appContainer.appModeStore.mode.collectAsStateWithLifecycle().value
             val telemetryEnabled = appContainer.usageTelemetry.enabled.collectAsStateWithLifecycle().value
             CallCenterTheme {
-                if (startupState == StartupUpdateState.Ready) {
+                if (
+                    startupState == StartupUpdateState.Ready &&
+                    announcementCheckFinished.value &&
+                    announcement.value == null
+                ) {
                     val requestCallPermissions = {
                         permissionLauncher.launch(
                             arrayOf(
@@ -157,12 +170,27 @@ class MainActivity : ComponentActivity() {
                             },
                         )
                     }
-                } else {
+                } else if (startupState != StartupUpdateState.Ready) {
                     UpdateGateScreen(
                         state = startupState,
                         onRetry = ::beginUpdateCheck,
                         onContinueInstallation = ::openInstaller,
                     )
+                } else {
+                    StartupAnnouncementGate(checking = !announcementCheckFinished.value)
+                }
+                if (startupState == StartupUpdateState.Ready) {
+                    announcement.value?.let { current ->
+                        StartupAnnouncementDialog(
+                            announcement = current,
+                            onRead = {
+                                if (announcementManager.markRead(current)) {
+                                    announcement.value = null
+                                    startApplicationOperationsIfAllowed()
+                                }
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -175,6 +203,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        beginAnnouncementCheck()
         beginUpdateCheck()
     }
 
@@ -183,7 +212,7 @@ class MainActivity : ComponentActivity() {
         backgroundLockJob?.cancel()
         backgroundLockJob = null
         permissionsReady.value = requiredPermissionsGranted()
-        if (updateState.value == StartupUpdateState.Ready) {
+        if (applicationOperationsStarted) {
             viewModel.refreshSimConfiguration()
             offlineViewModel.refreshSimConfiguration()
             if (appContainer.appModeStore.mode.value == AppMode.OFFLINE) {
@@ -316,15 +345,45 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun unlockApplication() {
+        updateState.value = StartupUpdateState.Ready
+        startApplicationOperationsIfAllowed()
+    }
+
+    private fun startApplicationOperationsIfAllowed() {
+        if (
+            applicationOperationsStarted ||
+            updateState.value != StartupUpdateState.Ready ||
+            !announcementCheckFinished.value ||
+            announcement.value != null
+        ) {
+            return
+        }
+        applicationOperationsStarted = true
         if (appContainer.appModeStore.mode.value == AppMode.OFFLINE) {
             appContainer.offlineRepository.lockIfBackgroundTimeout(OFFLINE_AUTO_LOCK_MILLIS)
         }
         startDialCollector()
-        updateState.value = StartupUpdateState.Ready
         when (appContainer.appModeStore.mode.value) {
             AppMode.ONLINE -> viewModel.onReturnedToForeground()
             AppMode.OFFLINE -> offlineViewModel.onReturnedToForeground()
             null -> Unit
+        }
+    }
+
+    private fun beginAnnouncementCheck() {
+        if (announcementCheckStarted) return
+        announcementCheckStarted = true
+        lifecycleScope.launch {
+            try {
+                announcement.value = announcementManager.fetchUnread()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // The announcement service is best-effort and must not block calling when unavailable.
+            } finally {
+                announcementCheckFinished.value = true
+                startApplicationOperationsIfAllowed()
+            }
         }
     }
 

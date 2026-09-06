@@ -7,12 +7,13 @@
 }
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; background: #f4f6f5; }
-button, input, select { font: inherit; letter-spacing: 0; }
+button, input, select, textarea { font: inherit; letter-spacing: 0; }
 button, .button-link { border: 0; border-radius: 6px; background: #176b45; color: #fff; min-height: 40px; padding: 0 16px; cursor: pointer; }
 button:hover, .button-link:hover { background: #115739; }
 button.secondary { background: #e7ece9; color: #25332b; }
-input, select { min-height: 42px; border: 1px solid #bac5bf; border-radius: 6px; background: #fff; padding: 8px 11px; color: #18201c; }
-input:focus, select:focus, button:focus-visible, .button-link:focus-visible { outline: 3px solid rgba(23,107,69,.2); outline-offset: 1px; border-color: #176b45; }
+input, select, textarea { min-height: 42px; border: 1px solid #bac5bf; border-radius: 6px; background: #fff; padding: 8px 11px; color: #18201c; }
+textarea { resize: vertical; line-height: 1.6; }
+input:focus, select:focus, textarea:focus, button:focus-visible, .button-link:focus-visible { outline: 3px solid rgba(23,107,69,.2); outline-offset: 1px; border-color: #176b45; }
 h1, h2, p { margin-top: 0; }
 h1 { margin-bottom: 0; font-size: 24px; line-height: 1.25; }
 h2 { margin-bottom: 4px; font-size: 17px; }
@@ -56,6 +57,14 @@ dialog::backdrop { background: rgba(24,32,28,.36); }
 .metric-card strong { display: block; margin-top: 10px; font-size: 27px; line-height: 1; }
 .metric-card small { display: block; margin-top: 9px; color: #75817b; }
 .dashboard-section { margin-top: 16px; padding: 18px; background: #fff; border: 1px solid #d8dfdb; border-radius: 8px; }
+.announcement-admin { margin-top: 0; margin-bottom: 16px; }
+.announcement-form { display: grid; grid-template-columns: 120px minmax(0, 1fr); align-items: start; gap: 10px 14px; margin-top: 18px; padding-bottom: 18px; border-bottom: 1px solid #e3e8e5; }
+.announcement-form label { padding-top: 11px; font-size: 13px; font-weight: 650; }
+.announcement-form textarea { min-height: 116px; }
+.announcement-form .form-footer, .announcement-form .form-status { grid-column: 2; }
+.form-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.form-status { margin: 0; border-left: 3px solid #176b45; background: #eaf3ee; color: #24513b; padding: 9px 11px; font-size: 13px; }
+.announcement-content-cell { max-width: 640px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; }
 .section-heading { display: flex; justify-content: space-between; align-items: start; gap: 16px; }
 .section-heading p { margin-bottom: 0; }
 .trend-chart { height: 252px; margin-top: 18px; overflow-x: auto; }
@@ -106,4 +115,7 @@ th { color: #59675f; background: #f8faf9; font-weight: 650; }
   .apk-layout { grid-template-columns: 1fr; justify-items: center; gap: 18px; }
   .apk-qr { width: min(240px, 100%); }
   .apk-details { width: 100%; }
+  .announcement-form { grid-template-columns: 1fr; }
+  .announcement-form label { padding-top: 2px; }
+  .announcement-form .form-footer, .announcement-form .form-status { grid-column: 1; }
 }

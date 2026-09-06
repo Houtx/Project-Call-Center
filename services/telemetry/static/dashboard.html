@@ -31,6 +31,31 @@
 
   <main class="dashboard">
     <p id="notice" class="notice"></p>
+
+    <section class="dashboard-section announcement-admin">
+      <div class="section-heading">
+        <div><h2>终端公告</h2><p>发布后，安装了支持公告版本的 APP 会在下次冷启动时强制阅读至少 10 秒</p></div>
+      </div>
+      <form id="announcement-form" class="announcement-form">
+        <input type="hidden" name="csrf" value="__CSRF_TOKEN__">
+        <label for="announcement-title">公告标题</label>
+        <input id="announcement-title" name="title" maxlength="80" required placeholder="例如：系统维护通知">
+        <label for="announcement-content">公告正文</label>
+        <textarea id="announcement-content" name="content" maxlength="2000" rows="5" required placeholder="请输入需要所有终端阅读的公告内容"></textarea>
+        <div class="form-footer">
+          <span id="announcement-count" class="muted">0 / 2000</span>
+          <button id="announcement-submit" type="submit">发布新公告</button>
+        </div>
+        <p id="announcement-status" class="form-status" aria-live="polite" hidden></p>
+      </form>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>发布时间</th><th>编号</th><th>标题</th><th>正文</th></tr></thead>
+          <tbody id="announcements"></tbody>
+        </table>
+      </div>
+    </section>
+
     <section id="metrics" class="metrics-grid" aria-label="核心指标"></section>
 
     <section class="dashboard-section">

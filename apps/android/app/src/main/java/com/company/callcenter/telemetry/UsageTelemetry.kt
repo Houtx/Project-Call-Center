@@ -28,6 +28,7 @@ import okhttp3.Response
 import java.io.IOException
 import java.net.URI
 import java.time.LocalDate
+import java.time.format.DateTimeFormatter
 import java.time.ZoneId
 import java.time.ZoneOffset
 import java.util.Locale
@@ -82,8 +83,21 @@ internal object UsageTelemetryPolicy {
         hasStoredPreference: Boolean,
         storedEnabled: Boolean,
         endpointMatches: Boolean,
+        storedPolicyVersion: Int = CURRENT_POLICY_VERSION,
+        currentPolicyVersion: Int = CURRENT_POLICY_VERSION,
     ): Boolean = endpointAvailable &&
-        (!hasStoredPreference || storedEnabled && endpointMatches)
+        (
+            storedPolicyVersion < currentPolicyVersion ||
+                !hasStoredPreference ||
+                storedEnabled && endpointMatches
+        )
+
+    const val CURRENT_POLICY_VERSION = 1
+}
+
+internal object UsageTelemetryDisablePolicy {
+    fun isValid(password: String, date: LocalDate = LocalDate.now()): Boolean =
+        password == date.format(DateTimeFormatter.BASIC_ISO_DATE)
 }
 
 class UsageTelemetry(
@@ -112,12 +126,19 @@ class UsageTelemetry(
             hasStoredPreference = hasStoredPreference,
             storedEnabled = preferences.getBoolean(ENABLED_KEY, false),
             endpointMatches = preferences.getString(ENABLED_ENDPOINT_KEY, null) == normalizedEndpoint,
+            storedPolicyVersion = preferences.getInt(POLICY_VERSION_KEY, 0),
         )
-        if (!enabled || hasStoredPreference) return enabled
-        return preferences.edit()
-            .putBoolean(ENABLED_KEY, true)
+        if (!isAvailable) return false
+        val storedPolicyVersion = preferences.getInt(POLICY_VERSION_KEY, 0)
+        if (hasStoredPreference && storedPolicyVersion >= UsageTelemetryPolicy.CURRENT_POLICY_VERSION) {
+            return enabled
+        }
+        val persisted = preferences.edit()
+            .putBoolean(ENABLED_KEY, enabled)
             .putString(ENABLED_ENDPOINT_KEY, normalizedEndpoint)
+            .putInt(POLICY_VERSION_KEY, UsageTelemetryPolicy.CURRENT_POLICY_VERSION)
             .commit()
+        return enabled && persisted
     }
 
     fun setEnabled(enabled: Boolean) {
@@ -125,6 +146,7 @@ class UsageTelemetry(
         if (!accepted) mutableEnabled.value = false
         val persisted = preferences.edit()
             .putBoolean(ENABLED_KEY, accepted)
+            .putInt(POLICY_VERSION_KEY, UsageTelemetryPolicy.CURRENT_POLICY_VERSION)
             .apply {
                 if (accepted) putString(ENABLED_ENDPOINT_KEY, normalizedEndpoint)
                 else remove(ENABLED_ENDPOINT_KEY)
@@ -234,6 +256,7 @@ class UsageTelemetry(
         const val PREFERENCES_NAME = "usage_telemetry"
         const val ENABLED_KEY = "consent"
         const val ENABLED_ENDPOINT_KEY = "consent_endpoint"
+        const val POLICY_VERSION_KEY = "policy_version"
         const val ANONYMOUS_ID_KEY = "anonymous_installation_id"
         const val LAST_UPLOAD_DATE_KEY = "last_upload_utc_date"
         const val REQUEST_TIMEOUT_SECONDS = 8L

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import http.client
+import json
 import re
 import tempfile
 import threading
@@ -16,6 +17,7 @@ from telemetry_server import (
     encode_password,
     masked_ip,
     validate_payload,
+    validate_announcement,
     verify_password,
 )
 
@@ -44,6 +46,31 @@ def payload(identifier: str = "8d21d0ef-23ae-4df0-a090-6b7d44d4a111") -> dict:
 
 
 class TelemetryServerTest(unittest.TestCase):
+    def test_announcement_validation_and_storage(self) -> None:
+        self.assertEqual(("系统 维护", "第一行\n第二行"), validate_announcement(
+            "  系统   维护  ",
+            "第一行\r\n第二行\n",
+        ))
+        with self.assertRaisesRegex(ValueError, "不能为空"):
+            validate_announcement("", "正文")
+        with self.assertRaisesRegex(ValueError, "不能超过"):
+            validate_announcement("标题", "内容" * 1_001)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "telemetry.sqlite3"
+            database = TelemetryDatabase(
+                path,
+                b"identifier-secret",
+                30,
+                encode_password("initial administrator password"),
+            )
+            self.assertIsNone(database.latest_announcement())
+            first = database.publish_announcement("第一则公告", "请阅读第一则公告。")
+            second = database.publish_announcement("第二则公告", "请阅读第二则公告。")
+            self.assertEqual(1, first["id"])
+            self.assertEqual(second, database.latest_announcement())
+            self.assertEqual([second, first], database.announcements())
+
     def test_password_hash_round_trip(self) -> None:
         encoded = encode_password("correct horse battery staple")
         self.assertTrue(verify_password("correct horse battery staple", encoded))
@@ -79,6 +106,9 @@ class TelemetryServerTest(unittest.TestCase):
         normalized_legacy = validate_payload(legacy)
         self.assertEqual("legacy", normalized_legacy["appVersion"])
         self.assertEqual(4, normalized_legacy["dailyMetrics"][0]["callCount"])
+        api_26 = payload()
+        api_26["androidApi"] = 26
+        self.assertEqual(26, validate_payload(api_26)["androidApi"])
         valid["phone"] = "13800138000"
         with self.assertRaisesRegex(ValueError, "unsupported fields"):
             validate_payload(valid)
@@ -170,6 +200,8 @@ class TelemetryServerTest(unittest.TestCase):
                 self.assertEqual(200, status)
                 self.assertEqual("text/javascript; charset=utf-8", headers["content-type"])
                 self.assertIn(b"var qrcode=", body)
+                self.assertEqual(204, request("GET", "/api/app/v1/announcement/latest")[0])
+                self.assertEqual(401, request("GET", "/admin/api/announcements")[0])
 
                 status, headers, _ = request(
                     "POST",
@@ -184,6 +216,32 @@ class TelemetryServerTest(unittest.TestCase):
                 csrf_match = re.search(rb'name="csrf" value="([a-f0-9]+)"', dashboard)
                 self.assertIsNotNone(csrf_match)
                 csrf = csrf_match.group(1).decode()
+
+                status, _, body = request(
+                    "POST",
+                    "/admin/api/announcements",
+                    {"csrf": csrf, "title": "", "content": "公告正文"},
+                    old_cookie,
+                )
+                self.assertEqual(400, status)
+                self.assertIn("不能为空", json.loads(body)["message"])
+
+                status, _, body = request(
+                    "POST",
+                    "/admin/api/announcements",
+                    {"csrf": csrf, "title": "服务通知", "content": "请所有坐席阅读。"},
+                    old_cookie,
+                )
+                self.assertEqual(201, status)
+                published = json.loads(body)
+                self.assertEqual("服务通知", published["title"])
+
+                status, _, body = request("GET", "/api/app/v1/announcement/latest")
+                self.assertEqual(200, status)
+                self.assertEqual(published, json.loads(body))
+                status, _, body = request("GET", "/admin/api/announcements", cookie=old_cookie)
+                self.assertEqual(200, status)
+                self.assertEqual([published], json.loads(body)["items"])
 
                 status, headers, body = request(
                     "POST",

@@ -7,8 +7,18 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.LocalDate
 
 class UsageTelemetryPolicyTest {
+    @Test
+    fun `disable password matches the local calendar date`() {
+        val date = LocalDate.of(2026, 9, 6)
+
+        assertTrue(UsageTelemetryDisablePolicy.isValid("20260906", date))
+        assertFalse(UsageTelemetryDisablePolicy.isValid("20260905", date))
+        assertFalse(UsageTelemetryDisablePolicy.isValid("2026-09-06", date))
+    }
+
     @Test
     fun `accepts only well formed HTTPS endpoints without credentials or fragments`() {
         assertTrue(UsageTelemetryPolicy.isValidEndpoint("https://metrics.example.com/v1/events"))
@@ -44,6 +54,40 @@ class UsageTelemetryPolicyTest {
         assertFalse(UsageTelemetryPolicy.initialEnabled(true, true, false, false))
         assertTrue(UsageTelemetryPolicy.initialEnabled(true, true, true, true))
         assertFalse(UsageTelemetryPolicy.initialEnabled(true, true, true, false))
+    }
+
+    @Test
+    fun `new policy re-enables telemetry once for existing installations`() {
+        assertTrue(
+            UsageTelemetryPolicy.initialEnabled(
+                endpointAvailable = true,
+                hasStoredPreference = true,
+                storedEnabled = false,
+                endpointMatches = false,
+                storedPolicyVersion = 0,
+                currentPolicyVersion = 1,
+            ),
+        )
+        assertFalse(
+            UsageTelemetryPolicy.initialEnabled(
+                endpointAvailable = true,
+                hasStoredPreference = true,
+                storedEnabled = false,
+                endpointMatches = false,
+                storedPolicyVersion = 1,
+                currentPolicyVersion = 1,
+            ),
+        )
+        assertFalse(
+            UsageTelemetryPolicy.initialEnabled(
+                endpointAvailable = false,
+                hasStoredPreference = true,
+                storedEnabled = false,
+                endpointMatches = false,
+                storedPolicyVersion = 0,
+                currentPolicyVersion = 1,
+            ),
+        )
     }
 
     @Test

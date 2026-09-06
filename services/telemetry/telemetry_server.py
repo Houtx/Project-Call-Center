@@ -34,6 +34,8 @@ VERSION_PATTERN = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,31}$")
 LOCALE_PATTERN = re.compile(r"^[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8}){0,2}$")
 TIMEZONE_PATTERN = re.compile(r"^[A-Za-z0-9_+./:-]{1,64}$")
 COUNTRY_PATTERN = re.compile(r"^[A-Z]{2}$")
+ANNOUNCEMENT_TITLE_MAX_LENGTH = 80
+ANNOUNCEMENT_CONTENT_MAX_LENGTH = 2_000
 LEGACY_PAYLOAD_KEYS = frozenset({"a", "b", "c", "d", "e", "f", "g"})
 LEGACY_METRIC_KEYS = LEGACY_PAYLOAD_KEYS
 
@@ -188,7 +190,7 @@ def validate_payload(payload: Any) -> dict[str, Any]:
         "anonymousId": anonymous_id,
         "date": active_date,
         "appVersion": app_version,
-        "androidApi": bounded_int(payload.get("androidApi"), "androidApi", 31, 100),
+        "androidApi": bounded_int(payload.get("androidApi"), "androidApi", 26, 100),
         "mode": mode,
         "locale": optional_text(payload.get("locale"), "locale", LOCALE_PATTERN, "unknown"),
         "timezone": optional_text(payload.get("timezone"), "timezone", TIMEZONE_PATTERN, "unknown"),
@@ -238,6 +240,22 @@ def verify_password(password: str, encoded: str) -> bool:
         return hmac.compare_digest(expected, actual)
     except (ValueError, TypeError):
         return False
+
+
+def validate_announcement(title: Any, content: Any) -> tuple[str, str]:
+    if not isinstance(title, str) or not isinstance(content, str):
+        raise ValueError("公告标题和正文不能为空")
+    normalized_title = " ".join(title.split())
+    normalized_content = content.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not normalized_title or not normalized_content:
+        raise ValueError("公告标题和正文不能为空")
+    if len(normalized_title) > ANNOUNCEMENT_TITLE_MAX_LENGTH:
+        raise ValueError(f"公告标题不能超过 {ANNOUNCEMENT_TITLE_MAX_LENGTH} 个字符")
+    if len(normalized_content) > ANNOUNCEMENT_CONTENT_MAX_LENGTH:
+        raise ValueError(f"公告正文不能超过 {ANNOUNCEMENT_CONTENT_MAX_LENGTH} 个字符")
+    if any(ord(character) < 32 and character not in {"\n", "\t"} for character in normalized_content):
+        raise ValueError("公告正文包含不支持的控制字符")
+    return normalized_title, normalized_content
 
 
 @dataclass(frozen=True)
@@ -345,6 +363,14 @@ class TelemetryDatabase:
                     session_version INTEGER NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS announcements (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    published_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS announcements_published_at ON announcements(published_at DESC);
                 """
             )
             db.execute(
@@ -382,6 +408,46 @@ class TelemetryDatabase:
             if cursor.rowcount != 1:
                 return None
         return session_version + 1
+
+    @staticmethod
+    def announcement_payload(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "title": row["title"],
+            "content": row["content"],
+            "publishedAt": row["published_at"],
+        }
+
+    def publish_announcement(self, title: Any, content: Any) -> dict[str, Any]:
+        normalized_title, normalized_content = validate_announcement(title, content)
+        published_at = iso_timestamp()
+        with self.connection() as db:
+            cursor = db.execute(
+                "INSERT INTO announcements (title, content, published_at) VALUES (?, ?, ?)",
+                (normalized_title, normalized_content, published_at),
+            )
+            row = db.execute(
+                "SELECT id, title, content, published_at FROM announcements WHERE id = ?",
+                (cursor.lastrowid,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("published announcement could not be loaded")
+        return self.announcement_payload(row)
+
+    def latest_announcement(self) -> dict[str, Any] | None:
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT id, title, content, published_at FROM announcements ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        return self.announcement_payload(row) if row is not None else None
+
+    def announcements(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self.connection() as db:
+            rows = db.execute(
+                "SELECT id, title, content, published_at FROM announcements ORDER BY id DESC LIMIT ?",
+                (max(1, min(100, limit)),),
+            ).fetchall()
+        return [self.announcement_payload(row) for row in rows]
 
     def ingest(self, payload: dict[str, Any], client_ip: str, country_code: str) -> None:
         now = iso_timestamp()
@@ -699,6 +765,13 @@ class TelemetryHandler(BaseHTTPRequestHandler):
         if path.path == "/healthz":
             self.respond(HTTPStatus.OK, b"ok\n", "text/plain; charset=utf-8")
             return
+        if path.path == "/api/app/v1/announcement/latest":
+            announcement = self.app.database.latest_announcement()
+            if announcement is None:
+                self.respond(HTTPStatus.NO_CONTENT, b"", "application/json; charset=utf-8")
+            else:
+                self.json_response(HTTPStatus.OK, announcement)
+            return
         if path.path == "/":
             self.redirect("/admin" if self.session_payload() else "/login")
             return
@@ -732,6 +805,11 @@ class TelemetryHandler(BaseHTTPRequestHandler):
                 self.json_response(HTTPStatus.BAD_REQUEST, {"message": "时间范围无效"})
                 return
             self.json_response(HTTPStatus.OK, self.app.database.dashboard(days))
+            return
+        if path.path == "/admin/api/announcements":
+            if self.require_session() is None:
+                return
+            self.json_response(HTTPStatus.OK, {"items": self.app.database.announcements()})
             return
         if path.path.startswith("/assets/"):
             name = path.path.removeprefix("/assets/")
@@ -769,6 +847,9 @@ class TelemetryHandler(BaseHTTPRequestHandler):
             return
         if path == "/admin/api/password":
             self.handle_change_password()
+            return
+        if path == "/admin/api/announcements":
+            self.handle_publish_announcement()
             return
         if path == "/logout":
             session = self.session_payload()
@@ -869,6 +950,31 @@ class TelemetryHandler(BaseHTTPRequestHandler):
             self.json_response(HTTPStatus.FORBIDDEN, {"message": "当前密码不正确"})
             return
         self.json_session_response(HTTPStatus.OK, {"changed": True}, session_version)
+
+    def handle_publish_announcement(self) -> None:
+        session = self.require_session()
+        if session is None:
+            return
+        if self.headers.get_content_type() != "application/x-www-form-urlencoded":
+            self.json_response(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, {"message": "请求格式无效"})
+            return
+        try:
+            values = urllib.parse.parse_qs(self.read_body().decode(), keep_blank_values=True)
+        except (ValueError, UnicodeDecodeError):
+            self.json_response(HTTPStatus.BAD_REQUEST, {"message": "请求格式无效"})
+            return
+        if not hmac.compare_digest(values.get("csrf", [""])[0], session[1]):
+            self.json_response(HTTPStatus.FORBIDDEN, {"message": "页面已过期，请刷新后重试"})
+            return
+        try:
+            announcement = self.app.database.publish_announcement(
+                values.get("title", [""])[0],
+                values.get("content", [""])[0],
+            )
+        except ValueError as error:
+            self.json_response(HTTPStatus.BAD_REQUEST, {"message": str(error)})
+            return
+        self.json_response(HTTPStatus.CREATED, announcement)
 
 
 class TelemetryServer(ThreadingHTTPServer):

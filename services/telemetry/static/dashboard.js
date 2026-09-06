@@ -246,6 +246,43 @@ function renderRecent(rows) {
   byId('recent').replaceChildren(...nodes);
 }
 
+function renderAnnouncements(rows) {
+  const nodes = rows.map((announcement) => {
+    const tr = document.createElement('tr');
+    const values = [
+      dateTime.format(new Date(announcement.publishedAt)),
+      `#${announcement.id}`,
+      announcement.title,
+      announcement.content,
+    ];
+    values.forEach((value, index) => {
+      const td = document.createElement('td');
+      td.textContent = value;
+      if (index === 3) td.className = 'announcement-content-cell';
+      tr.append(td);
+    });
+    return tr;
+  });
+  if (!nodes.length) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 4;
+    td.className = 'muted';
+    td.textContent = '尚未发布公告';
+    tr.append(td);
+    nodes.push(tr);
+  }
+  byId('announcements').replaceChildren(...nodes);
+}
+
+async function loadAnnouncements() {
+  const response = await fetch('/admin/api/announcements', { credentials: 'same-origin', cache: 'no-store' });
+  if (response.status === 401) { location.href = '/login'; return; }
+  if (!response.ok) throw new Error(`公告加载失败（HTTP ${response.status}）`);
+  const result = await response.json();
+  renderAnnouncements(Array.isArray(result.items) ? result.items : []);
+}
+
 async function load() {
   byId('loading').hidden = false;
   byId('error').hidden = true;
@@ -429,6 +466,51 @@ passwordForm.addEventListener('submit', async (event) => {
   }
 });
 
+const announcementForm = byId('announcement-form');
+const announcementContent = byId('announcement-content');
+const announcementSubmit = byId('announcement-submit');
+const announcementStatus = byId('announcement-status');
+
+announcementContent.addEventListener('input', () => {
+  byId('announcement-count').textContent = `${announcementContent.value.length} / 2000`;
+});
+announcementForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  announcementStatus.hidden = true;
+  if (!window.confirm('发布后，新公告会在所有支持该功能的 APP 下次启动时弹出。确认发布吗？')) return;
+  announcementSubmit.disabled = true;
+  announcementSubmit.textContent = '正在发布';
+  try {
+    const response = await fetch('/admin/api/announcements', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+      body: new URLSearchParams(new FormData(announcementForm)),
+    });
+    if (response.status === 401) { location.href = '/login'; return; }
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.message || `HTTP ${response.status}`);
+    announcementForm.reset();
+    byId('announcement-count').textContent = '0 / 2000';
+    announcementStatus.className = 'form-status';
+    announcementStatus.textContent = `公告 #${result.id} 已发布`;
+    announcementStatus.hidden = false;
+    await loadAnnouncements();
+  } catch (error) {
+    announcementStatus.textContent = `发布失败：${error.message}`;
+    announcementStatus.className = 'form-error';
+    announcementStatus.hidden = false;
+  } finally {
+    announcementSubmit.disabled = false;
+    announcementSubmit.textContent = '发布新公告';
+  }
+});
+
 byId('range').addEventListener('change', load);
 byId('refresh').addEventListener('click', load);
 load();
+loadAnnouncements().catch((error) => {
+  announcementStatus.textContent = error.message;
+  announcementStatus.className = 'form-error';
+  announcementStatus.hidden = false;
+});
