@@ -46,7 +46,9 @@ function hideChartTooltip() {
 function bindChartTooltip(node, lines) {
   const show = (event) => showChartTooltip(lines, event, node);
   node.addEventListener('pointerenter', show);
-  node.addEventListener('pointermove', show);
+  node.addEventListener('pointermove', (event) => {
+    if (!chartTooltip.hidden) positionChartTooltip(event.clientX, event.clientY, node);
+  });
   node.addEventListener('pointerleave', () => {
     if (document.activeElement !== node) hideChartTooltip();
   });
@@ -62,9 +64,9 @@ function duration(seconds) {
   return hours ? `${hours} 小时 ${minutes} 分` : minutes ? `${minutes} 分 ${rest} 秒` : `${rest} 秒`;
 }
 
-function metric(label, value, note) {
+function metric(label, value, note, tone) {
   const node = document.createElement('article');
-  node.className = 'metric-card';
+  node.className = `metric-card tone-${tone}`;
   const title = document.createElement('span');
   const strong = document.createElement('strong');
   const small = document.createElement('small');
@@ -78,14 +80,14 @@ function metric(label, value, note) {
 function renderMetrics(data) {
   const m = data.metrics;
   const values = [
-    ['今日活跃安装', number.format(m.activeToday), '已启用匿名统计'],
-    [`近 ${data.rangeDays} 天活跃`, number.format(m.activeRange), `观测安装 ${number.format(m.observedInstallations)}`],
-    ['外呼总量', number.format(m.callCount), `接通 ${number.format(m.connectedCount)} · 未接 ${number.format(m.notConnectedCount)}`],
-    ['接通率', `${(m.connectionRate * 100).toFixed(1)}%`, `未知 ${number.format(m.unknownCount)} 通不计入分母`],
-    ['总通话时长', duration(m.totalDurationSeconds), '仅汇总已接通通话'],
-    ['平均通话时长', duration(m.averageDurationSeconds), '按接通通话计算'],
-    ['来源 IP 数', number.format(m.ipCount), 'IP 仅保存 HMAC 与脱敏网段'],
-    ['明细保留', `${data.retentionDays} 天`, '汇总数据长期保留'],
+    ['今日活跃安装', number.format(m.activeToday), '已启用匿名统计', 'primary'],
+    [`近 ${data.rangeDays} 天活跃`, number.format(m.activeRange), `观测安装 ${number.format(m.observedInstallations)}`, 'teal'],
+    ['外呼总量', number.format(m.callCount), `接通 ${number.format(m.connectedCount)} · 未接 ${number.format(m.notConnectedCount)}`, 'teal'],
+    ['接通率', `${(m.connectionRate * 100).toFixed(1)}%`, `未知 ${number.format(m.unknownCount)} 通不计入分母`, 'primary'],
+    ['总通话时长', duration(m.totalDurationSeconds), '仅汇总已接通通话', 'amber'],
+    ['平均通话时长', duration(m.averageDurationSeconds), '按接通通话计算', 'amber'],
+    ['来源 IP 数', number.format(m.ipCount), 'IP 仅保存 HMAC 与脱敏网段', 'neutral'],
+    ['明细保留', `${data.retentionDays} 天`, '汇总数据长期保留', 'neutral'],
   ];
   byId('metrics').replaceChildren(...values.map((item) => metric(...item)));
 }
@@ -94,13 +96,20 @@ function renderTrend(rows) {
   hideChartTooltip();
   const values = rows.map((row) => numeric(row.calls));
   const maximum = Math.max(1, ...values);
+  const targetStep = maximum / 4;
+  const magnitude = 10 ** Math.floor(Math.log10(targetStep));
+  const residual = targetStep / magnitude;
+  const niceFactor = residual <= 1 ? 1 : residual <= 2 ? 2 : residual <= 5 ? 5 : 10;
+  const tickStep = Math.max(1, niceFactor * magnitude);
+  const graphMaximum = tickStep * 4;
   const svgNamespace = 'http://www.w3.org/2000/svg';
-  const width = Math.max(760, rows.length * 24);
-  const height = 240;
+  const dailyWidth = rows.length > 90 ? 14 : 24;
+  const width = Math.max(760, rows.length * dailyWidth + 58, byId('trend').clientWidth || 0);
+  const height = 250;
   const plotLeft = 42;
   const plotRight = width - 8;
-  const plotTop = 16;
-  const baseline = 190;
+  const plotTop = 18;
+  const baseline = 210;
   const plotHeight = baseline - plotTop;
   const labelCount = Math.min(10, rows.length);
   const labelIndexes = new Set(Array.from({ length: labelCount }, (_, index) => (
@@ -110,10 +119,13 @@ function renderTrend(rows) {
   svg.classList.add('trend-svg');
   svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
   svg.setAttribute('preserveAspectRatio', 'none');
+  svg.style.width = `${width}px`;
+  svg.style.minWidth = `${width}px`;
   const gridGroup = document.createElementNS(svgNamespace, 'g');
   gridGroup.setAttribute('aria-hidden', 'true');
-  [1, .75, .5, .25].forEach((ratio) => {
-    const y = plotTop + plotHeight * (1 - ratio);
+  [0, 1, 2, 3, 4].forEach((tick) => {
+    const ratio = tick / 4;
+    const y = baseline - plotHeight * ratio;
     const gridline = document.createElementNS(svgNamespace, 'line');
     gridline.classList.add('gridline');
     gridline.setAttribute('x1', String(plotLeft));
@@ -125,7 +137,7 @@ function renderTrend(rows) {
     label.setAttribute('x', String(plotLeft - 8));
     label.setAttribute('y', String(y + 3));
     label.setAttribute('text-anchor', 'end');
-    label.textContent = number.format(Math.round(maximum * ratio));
+    label.textContent = number.format(tickStep * tick);
     gridGroup.append(gridline, label);
   });
   svg.append(gridGroup);
@@ -139,35 +151,49 @@ function renderTrend(rows) {
   rows.forEach((row, index) => {
     const slot = (plotRight - plotLeft) / Math.max(1, rows.length);
     const calls = values[index];
-    const connected = numeric(row.connected);
+    const connected = Math.min(calls, numeric(row.connected));
     const installations = numeric(row.installations);
-    const barHeight = calls > 0 ? Math.max(3, Math.round((calls / maximum) * plotHeight)) : 2;
+    const barHeight = calls > 0 ? Math.max(3, Math.round((calls / graphMaximum) * plotHeight)) : 2;
+    const connectedHeight = connected > 0 ? Math.max(2, Math.round((connected / graphMaximum) * plotHeight)) : 0;
+    const barWidth = Math.min(28, slot * .68);
+    const x = plotLeft + index * slot + (slot - barWidth) / 2;
+    const connectionRate = calls ? (connected / calls) * 100 : 0;
+    const group = document.createElementNS(svgNamespace, 'g');
+    group.classList.add('day-group');
+    group.setAttribute('tabindex', '0');
+    group.setAttribute('role', 'img');
+    group.setAttribute('aria-label', `${row.date}，外呼总量 ${number.format(calls)}，接通 ${number.format(connected)}，接通率 ${connectionRate.toFixed(1)}%，活跃安装 ${number.format(installations)}`);
     const bar = document.createElementNS(svgNamespace, 'rect');
     bar.classList.add('bar');
-    bar.setAttribute('x', String(plotLeft + index * slot + slot * .15));
+    bar.setAttribute('x', String(x));
     bar.setAttribute('y', String(baseline - barHeight));
-    bar.setAttribute('width', String(slot * .7));
+    bar.setAttribute('width', String(barWidth));
     bar.setAttribute('height', String(barHeight));
     bar.setAttribute('rx', '3');
-    bar.setAttribute('tabindex', '0');
-    bar.setAttribute('role', 'img');
-    bar.setAttribute('aria-label', `${row.date}，外呼总量 ${number.format(calls)}，接通 ${number.format(connected)}，活跃安装 ${number.format(installations)}`);
+    const connectedBar = document.createElementNS(svgNamespace, 'rect');
+    connectedBar.classList.add('bar-connected');
+    connectedBar.setAttribute('x', String(x));
+    connectedBar.setAttribute('y', String(baseline - connectedHeight));
+    connectedBar.setAttribute('width', String(barWidth));
+    connectedBar.setAttribute('height', String(connectedHeight));
+    connectedBar.setAttribute('rx', '3');
     const tooltipLines = [
       row.date,
       `外呼总量：${number.format(calls)}`,
       `接通数：${number.format(connected)}`,
+      `接通率：${connectionRate.toFixed(1)}%`,
       `活跃安装：${number.format(installations)}`,
     ];
-    bindChartTooltip(bar, tooltipLines);
+    bindChartTooltip(group, tooltipLines);
     const title = document.createElementNS(svgNamespace, 'title');
     title.textContent = tooltipLines.join('，');
-    bar.append(title);
-    svg.append(bar);
+    group.append(title, bar, connectedBar);
+    svg.append(group);
     if (labelIndexes.has(index)) {
       const label = document.createElementNS(svgNamespace, 'text');
       label.classList.add('date-label');
       label.setAttribute('x', String(plotLeft + index * slot + slot / 2));
-      label.setAttribute('y', '210');
+      label.setAttribute('y', '236');
       label.setAttribute('text-anchor', index === 0 ? 'start' : index === rows.length - 1 ? 'end' : 'middle');
       label.textContent = String(row.date).slice(5);
       svg.append(label);
@@ -228,8 +254,16 @@ function renderRecent(rows) {
     ];
     values.forEach((value, index) => {
       const td = document.createElement('td');
-      td.textContent = value;
-      if (index === 2) td.className = 'mode-tag';
+      td.title = value;
+      if (index === 2) {
+        const tag = document.createElement('span');
+        tag.className = `mode-tag ${row.mode === 'offline' ? 'offline' : 'online'}`;
+        tag.textContent = value;
+        td.append(tag);
+      } else {
+        td.textContent = value;
+      }
+      if ([1, 4, 6].includes(index)) td.classList.add('cell-mono');
       tr.append(td);
     });
     return tr;
@@ -248,23 +282,35 @@ function renderRecent(rows) {
 
 let announcementsById = new Map();
 
-function announcementCell(value, className = '') {
-  const td = document.createElement('td');
-  td.textContent = value;
-  if (className) td.className = className;
-  return td;
-}
-
 function renderAnnouncements(rows) {
   announcementsById = new Map(rows.map((announcement) => [Number(announcement.id), announcement]));
+  const activeAnnouncement = rows.find((announcement) => announcement.active);
+  byId('announcement-summary').textContent = activeAnnouncement
+    ? `当前公告 #${activeAnnouncement.id} · 共 ${number.format(rows.length)} 条记录`
+    : `暂无当前公告 · 共 ${number.format(rows.length)} 条记录`;
   const nodes = rows.map((announcement) => {
-    const tr = document.createElement('tr');
-    const statusCell = document.createElement('td');
+    const item = document.createElement('article');
+    item.className = `announcement-item${announcement.active ? ' current' : ''}`;
+    item.setAttribute('role', 'listitem');
+    const body = document.createElement('div');
+    body.className = 'announcement-item-body';
+    const header = document.createElement('div');
+    header.className = 'announcement-item-header';
     const status = document.createElement('span');
     status.className = `announcement-status-tag${announcement.active ? ' active' : ''}`;
     status.textContent = announcement.active ? '当前' : '历史';
-    statusCell.append(status);
-    const actions = document.createElement('td');
+    const meta = document.createElement('span');
+    meta.className = 'announcement-item-meta';
+    meta.textContent = `#${announcement.id} · ${dateTime.format(new Date(announcement.publishedAt))} · 修订 ${announcement.revision}`;
+    header.append(status, meta);
+    const title = document.createElement('h4');
+    title.textContent = announcement.title;
+    const content = document.createElement('p');
+    content.className = 'announcement-content';
+    content.textContent = announcement.content;
+    content.title = announcement.content;
+    body.append(header, title, content);
+    const actions = document.createElement('div');
     actions.className = 'announcement-actions';
     const edit = document.createElement('button');
     edit.type = 'button';
@@ -277,24 +323,14 @@ function renderAnnouncements(rows) {
     remove.textContent = '删除';
     remove.addEventListener('click', () => deleteAnnouncement(Number(announcement.id), remove));
     actions.append(edit, remove);
-    tr.append(
-      announcementCell(dateTime.format(new Date(announcement.publishedAt))),
-      announcementCell(`#${announcement.id}`),
-      statusCell,
-      announcementCell(announcement.title),
-      announcementCell(announcement.content, 'announcement-content-cell'),
-      actions,
-    );
-    return tr;
+    item.append(body, actions);
+    return item;
   });
   if (!nodes.length) {
-    const tr = document.createElement('tr');
-    const td = document.createElement('td');
-    td.colSpan = 6;
-    td.className = 'muted';
-    td.textContent = '尚未发布公告';
-    tr.append(td);
-    nodes.push(tr);
+    const empty = document.createElement('p');
+    empty.className = 'empty-state';
+    empty.textContent = '尚未发布公告';
+    nodes.push(empty);
   }
   byId('announcements').replaceChildren(...nodes);
 }
@@ -308,10 +344,17 @@ async function loadAnnouncements() {
 }
 
 async function load() {
+  const refresh = byId('refresh');
+  const refreshLabel = refresh.textContent;
   byId('loading').hidden = false;
   byId('error').hidden = true;
+  refresh.disabled = true;
+  refresh.textContent = '正在刷新';
   try {
-    const response = await fetch(`/admin/api/dashboard?days=${byId('range').value}`, { credentials: 'same-origin' });
+    const response = await fetch(`/admin/api/dashboard?days=${byId('range').value}`, {
+      credentials: 'same-origin',
+      cache: 'no-store',
+    });
     if (response.status === 401) { location.href = '/login'; return; }
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
@@ -330,6 +373,8 @@ async function load() {
     byId('error').hidden = false;
   } finally {
     byId('loading').hidden = true;
+    refresh.disabled = false;
+    refresh.textContent = refreshLabel;
   }
 }
 

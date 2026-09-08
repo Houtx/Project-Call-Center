@@ -125,13 +125,17 @@ await new Promise((resolve) => setTimeout(resolve, 0));
 
 const document = dom.window.document;
 assert.equal(document.querySelectorAll('.metric-card').length, 8);
+assert.equal(document.querySelectorAll('.section-nav a').length, 4);
 assert.equal(document.querySelectorAll('.trend-svg rect.bar').length, 30);
-assert.equal(document.querySelectorAll('.trend-svg .gridline').length, 4);
+assert.equal(document.querySelectorAll('.trend-svg rect.bar-connected').length, 30);
+assert.equal(document.querySelectorAll('.trend-svg .gridline').length, 5);
 assert.equal(document.querySelectorAll('.trend-svg .date-label').length, 10);
 assert.equal(document.querySelector('.trend-svg .date-label').textContent, '07-01');
 assert.equal(document.querySelector('.trend-svg .date-label:last-child').textContent, '07-30');
 assert.equal(document.querySelectorAll('.bar-row .bar-fill').length, 5);
 assert.equal(document.querySelectorAll('#recent tr').length, 1);
+assert.equal(document.querySelectorAll('#recent tr:first-child td').length, 7);
+assert.equal(document.querySelector('#recent .mode-tag').parentElement.tagName, 'TD');
 assert.match(document.querySelector('#metrics').textContent, /外呼总量/);
 assert.match(document.querySelector('#recent').textContent, /203\.0\.113\.\*/);
 assert.equal(document.querySelector('#error').hidden, true);
@@ -141,13 +145,14 @@ assert.equal(document.querySelector('#password-open').textContent, '修改密码
 assert.equal(document.querySelectorAll('#password-dialog input[type="password"]').length, 3);
 assert.equal(document.querySelector('#apk-open').textContent, '下载最新 APK');
 assert.equal(document.querySelector('#announcement-submit').textContent, '发布新公告');
-assert.equal(document.querySelectorAll('#announcements tr').length, 1);
+assert.equal(document.querySelectorAll('#announcements .announcement-item').length, 1);
 assert.match(document.querySelector('#announcements').textContent, /服务通知/);
 assert.match(document.querySelector('#announcements').textContent, /请所有坐席阅读/);
 assert.equal(document.querySelector('.announcement-status-tag').textContent, '当前');
 assert.equal(document.querySelectorAll('.announcement-actions button').length, 2);
+assert.match(document.querySelector('#announcement-summary').textContent, /当前公告 #3/);
 
-const trendBar = document.querySelector('.trend-svg rect.bar');
+const trendBar = document.querySelector('.trend-svg .day-group');
 assert.equal(trendBar.getAttribute('tabindex'), '0');
 assert.match(trendBar.getAttribute('aria-label'), /外呼总量 0/);
 trendBar.dispatchEvent(new dom.window.Event('pointerenter', { bubbles: true }));
