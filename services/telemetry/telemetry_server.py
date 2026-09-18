@@ -11,6 +11,7 @@ import hmac
 import html
 import ipaddress
 import json
+import math
 import os
 import re
 import secrets
@@ -37,6 +38,14 @@ COUNTRY_PATTERN = re.compile(r"^[A-Z]{2}$")
 ANNOUNCEMENT_TITLE_MAX_LENGTH = 80
 ANNOUNCEMENT_CONTENT_MAX_LENGTH = 2_000
 ANNOUNCEMENT_ADMIN_PATH_PATTERN = re.compile(r"^/admin/api/announcements/([1-9][0-9]*)$")
+MAP_RAW_ZOOM = 13
+MAP_RAW_LIMIT = 2_000
+MAP_CLUSTER_CELL_PIXELS = 72
+MAP_TILE_URL_DEFAULT = (
+    "https://webrd02.is.autonavi.com/appmaptile?"
+    "lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}"
+)
+MAP_ATTRIBUTION_DEFAULT = "高德地图"
 LEGACY_PAYLOAD_KEYS = frozenset({"a", "b", "c", "d", "e", "f", "g"})
 LEGACY_METRIC_KEYS = LEGACY_PAYLOAD_KEYS
 
@@ -62,6 +71,29 @@ def bounded_int(value: Any, field: str, minimum: int, maximum: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
         raise ValueError(f"{field} is out of range")
     return value
+
+
+def bounded_float(value: Any, field: str, minimum: float, maximum: float) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or not minimum <= value <= maximum
+    ):
+        raise ValueError(f"{field} is out of range")
+    return float(value)
+
+
+def parse_timestamp(value: Any, field: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be an ISO timestamp")
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError(f"{field} must be an ISO timestamp") from error
+    if parsed.tzinfo is None:
+        raise ValueError(f"{field} must include a timezone")
+    return iso_timestamp(parsed.astimezone(dt.timezone.utc))
 
 
 def optional_text(value: Any, field: str, pattern: re.Pattern[str], fallback: str) -> str:
@@ -111,6 +143,7 @@ def normalize_legacy_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "locale": payload.get("e"),
         "timezone": payload.get("f"),
         "dailyMetrics": metrics,
+        "locations": [],
     }
 
 
@@ -127,6 +160,7 @@ def validate_payload(payload: Any) -> dict[str, Any]:
         "locale",
         "timezone",
         "dailyMetrics",
+        "locations",
     }
     unsupported = sorted(set(payload) - allowed)
     if unsupported:
@@ -187,6 +221,44 @@ def validate_payload(payload: Any) -> dict[str, Any]:
                 ),
             }
         )
+    locations = payload.get("locations", [])
+    if not isinstance(locations, list) or len(locations) > 31:
+        raise ValueError("locations is invalid")
+    normalized_locations: list[dict[str, Any]] = []
+    for item in locations:
+        if not isinstance(item, dict) or set(item) != {
+            "date",
+            "latitudeE7",
+            "longitudeE7",
+            "accuracyMeters",
+            "capturedAt",
+        }:
+            raise ValueError("locations item is invalid")
+        location_date = parse_date(item["date"], "locations.date")
+        location_date_value = dt.date.fromisoformat(location_date)
+        if location_date_value < today - dt.timedelta(days=400) or location_date_value > today + dt.timedelta(days=1):
+            raise ValueError("locations.date is outside the retention window")
+        captured_at = parse_timestamp(item["capturedAt"], "locations.capturedAt")
+        captured_date = dt.datetime.fromisoformat(captured_at.replace("Z", "+00:00")).date()
+        if captured_date < today - dt.timedelta(days=401) or captured_date > today + dt.timedelta(days=1):
+            raise ValueError("locations.capturedAt is outside the retention window")
+        if abs((captured_date - location_date_value).days) > 1:
+            raise ValueError("locations date and capturedAt do not match")
+        normalized_locations.append(
+            {
+                "date": location_date,
+                "latitudeE7": bounded_int(
+                    item["latitudeE7"], "locations.latitudeE7", -900_000_000, 900_000_000
+                ),
+                "longitudeE7": bounded_int(
+                    item["longitudeE7"], "locations.longitudeE7", -1_800_000_000, 1_800_000_000
+                ),
+                "accuracyMeters": bounded_float(
+                    item["accuracyMeters"], "locations.accuracyMeters", 0, 50_000
+                ),
+                "capturedAt": captured_at,
+            }
+        )
     return {
         "anonymousId": anonymous_id,
         "date": active_date,
@@ -196,6 +268,7 @@ def validate_payload(payload: Any) -> dict[str, Any]:
         "locale": optional_text(payload.get("locale"), "locale", LOCALE_PATTERN, "unknown"),
         "timezone": optional_text(payload.get("timezone"), "timezone", TIMEZONE_PATTERN, "unknown"),
         "dailyMetrics": normalized_metrics,
+        "locations": normalized_locations,
     }
 
 
@@ -259,6 +332,27 @@ def validate_announcement(title: Any, content: Any) -> tuple[str, str]:
     return normalized_title, normalized_content
 
 
+def validate_map_tile_url(value: str) -> str:
+    parsed = urllib.parse.urlsplit(value)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+        or any(token not in value for token in ("{z}", "{x}", "{y}"))
+    ):
+        raise ValueError("TELEMETRY_MAP_TILE_URL must be an HTTPS tile template")
+    return value
+
+
+def validate_map_attribution(value: str) -> str:
+    normalized = " ".join(value.split())
+    if not normalized or len(normalized) > 160 or any(character in normalized for character in "<>"):
+        raise ValueError("TELEMETRY_MAP_ATTRIBUTION must be plain text up to 160 characters")
+    return normalized
+
+
 @dataclass(frozen=True)
 class Config:
     bind_host: str
@@ -271,6 +365,8 @@ class Config:
     retention_days: int
     static_dir: Path
     secure_cookie: bool
+    map_tile_url: str = MAP_TILE_URL_DEFAULT
+    map_attribution: str = MAP_ATTRIBUTION_DEFAULT
 
     @classmethod
     def from_environment(cls) -> "Config":
@@ -289,6 +385,12 @@ class Config:
             retention_days=max(7, min(365, int(os.environ.get("TELEMETRY_DETAIL_RETENTION_DAYS", "30")))),
             static_dir=Path(os.environ.get("TELEMETRY_STATIC_DIR", Path(__file__).with_name("static"))),
             secure_cookie=os.environ.get("TELEMETRY_SECURE_COOKIE", "true").lower() not in {"0", "false", "no"},
+            map_tile_url=validate_map_tile_url(
+                os.environ.get("TELEMETRY_MAP_TILE_URL", MAP_TILE_URL_DEFAULT).strip()
+            ),
+            map_attribution=validate_map_attribution(
+                os.environ.get("TELEMETRY_MAP_ATTRIBUTION", MAP_ATTRIBUTION_DEFAULT)
+            ),
         )
 
 
@@ -357,6 +459,19 @@ class TelemetryDatabase:
                     PRIMARY KEY (install_hash, metric_date, mode)
                 );
                 CREATE INDEX IF NOT EXISTS daily_call_metrics_date ON daily_call_metrics(metric_date);
+
+                CREATE TABLE IF NOT EXISTS installation_locations (
+                    install_hash TEXT NOT NULL,
+                    location_date TEXT NOT NULL,
+                    latitude_e7 INTEGER NOT NULL,
+                    longitude_e7 INTEGER NOT NULL,
+                    accuracy_meters REAL NOT NULL,
+                    captured_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (install_hash, location_date)
+                );
+                CREATE INDEX IF NOT EXISTS installation_locations_date
+                    ON installation_locations(location_date);
 
                 CREATE TABLE IF NOT EXISTS admin_security (
                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -572,8 +687,191 @@ class TelemetryDatabase:
                         now,
                     ),
                 )
+            for location in payload["locations"]:
+                db.execute(
+                    """
+                    INSERT INTO installation_locations (
+                        install_hash, location_date, latitude_e7, longitude_e7,
+                        accuracy_meters, captured_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(install_hash, location_date) DO UPDATE SET
+                        latitude_e7=excluded.latitude_e7,
+                        longitude_e7=excluded.longitude_e7,
+                        accuracy_meters=excluded.accuracy_meters,
+                        captured_at=excluded.captured_at,
+                        updated_at=excluded.updated_at
+                    WHERE excluded.captured_at >= installation_locations.captured_at
+                    """,
+                    (
+                        install_hash,
+                        location["date"],
+                        location["latitudeE7"],
+                        location["longitudeE7"],
+                        location["accuracyMeters"],
+                        location["capturedAt"],
+                        now,
+                    ),
+                )
             cutoff = (utc_now().date() - dt.timedelta(days=self.retention_days)).isoformat()
             db.execute("DELETE FROM installation_days WHERE active_date < ?", (cutoff,))
+            db.execute("DELETE FROM installation_locations WHERE location_date < ?", (cutoff,))
+
+    @staticmethod
+    def _map_metrics(row: sqlite3.Row | dict[str, Any], devices: int = 1) -> dict[str, Any]:
+        calls = int(row["calls"] or 0)
+        connected = int(row["connected"] or 0)
+        not_connected = int(row["not_connected"] or 0)
+        unknown = int(row["unknown"] or 0)
+        duration = int(row["duration"] or 0)
+        denominator = connected + not_connected
+        return {
+            "devices": devices,
+            "calls": calls,
+            "connected": connected,
+            "notConnected": not_connected,
+            "unknown": unknown,
+            "totalDurationSeconds": duration,
+            "connectionRate": connected / denominator if denominator else 0,
+            "averageDurationSeconds": duration / connected if connected else 0,
+        }
+
+    @staticmethod
+    def _cluster_key(latitude: float, longitude: float, zoom: int) -> tuple[int, int]:
+        scale = 256 * (2 ** zoom)
+        sin_latitude = max(-0.9999, min(0.9999, math.sin(math.radians(latitude))))
+        pixel_x = (longitude + 180.0) / 360.0 * scale
+        pixel_y = (0.5 - math.log((1 + sin_latitude) / (1 - sin_latitude)) / (4 * math.pi)) * scale
+        return (
+            math.floor(pixel_x / MAP_CLUSTER_CELL_PIXELS),
+            math.floor(pixel_y / MAP_CLUSTER_CELL_PIXELS),
+        )
+
+    def map_data(
+        self,
+        days: int,
+        zoom: int,
+        bounds: tuple[float, float, float, float],
+    ) -> dict[str, Any]:
+        today = utc_now().date()
+        start = (today - dt.timedelta(days=days - 1)).isoformat()
+        west, south, east, north = bounds
+        longitude_filter = (
+            "ranked.longitude_e7 BETWEEN ? AND ?"
+            if west <= east
+            else "(ranked.longitude_e7 >= ? OR ranked.longitude_e7 <= ?)"
+        )
+        with self.connection() as db:
+            rows = db.execute(
+                f"""
+                WITH ranked AS (
+                    SELECT install_hash, location_date, latitude_e7, longitude_e7,
+                           accuracy_meters, captured_at,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY install_hash
+                               ORDER BY location_date DESC, captured_at DESC
+                           ) AS position_rank
+                    FROM installation_locations
+                    WHERE location_date >= ?
+                ), calls AS (
+                    SELECT install_hash,
+                           SUM(call_count) AS calls,
+                           SUM(connected_count) AS connected,
+                           SUM(not_connected_count) AS not_connected,
+                           SUM(unknown_count) AS unknown,
+                           SUM(total_duration_seconds) AS duration
+                    FROM daily_call_metrics
+                    WHERE metric_date >= ?
+                    GROUP BY install_hash
+                )
+                SELECT substr(ranked.install_hash, 1, 10) AS installation,
+                       ranked.location_date, ranked.latitude_e7, ranked.longitude_e7,
+                       ranked.accuracy_meters, ranked.captured_at,
+                       COALESCE(calls.calls, 0) AS calls,
+                       COALESCE(calls.connected, 0) AS connected,
+                       COALESCE(calls.not_connected, 0) AS not_connected,
+                       COALESCE(calls.unknown, 0) AS unknown,
+                       COALESCE(calls.duration, 0) AS duration
+                FROM ranked
+                LEFT JOIN calls ON calls.install_hash = ranked.install_hash
+                WHERE ranked.position_rank = 1
+                  AND ranked.latitude_e7 BETWEEN ? AND ?
+                  AND {longitude_filter}
+                ORDER BY ranked.captured_at DESC, ranked.install_hash
+                """,
+                (
+                    start,
+                    start,
+                    round(south * 10_000_000),
+                    round(north * 10_000_000),
+                    round(west * 10_000_000),
+                    round(east * 10_000_000),
+                ),
+            ).fetchall()
+
+        if zoom >= MAP_RAW_ZOOM:
+            truncated = len(rows) > MAP_RAW_LIMIT
+            items = []
+            for row in rows[:MAP_RAW_LIMIT]:
+                item = {
+                    "kind": "device",
+                    "latitude": row["latitude_e7"] / 10_000_000,
+                    "longitude": row["longitude_e7"] / 10_000_000,
+                    "installation": row["installation"],
+                    "locationDate": row["location_date"],
+                    "capturedAt": row["captured_at"],
+                    "accuracyMeters": round(row["accuracy_meters"], 1),
+                }
+                item.update(self._map_metrics(row))
+                items.append(item)
+            mode = "devices"
+        else:
+            groups: dict[tuple[int, int], dict[str, Any]] = {}
+            for row in rows:
+                latitude = row["latitude_e7"] / 10_000_000
+                longitude = row["longitude_e7"] / 10_000_000
+                group = groups.setdefault(
+                    self._cluster_key(latitude, longitude, zoom),
+                    {
+                        "latitude_total": 0.0,
+                        "longitude_total": 0.0,
+                        "devices": 0,
+                        "calls": 0,
+                        "connected": 0,
+                        "not_connected": 0,
+                        "unknown": 0,
+                        "duration": 0,
+                    },
+                )
+                group["latitude_total"] += latitude
+                group["longitude_total"] += longitude
+                group["devices"] += 1
+                for target, source in (
+                    ("calls", "calls"),
+                    ("connected", "connected"),
+                    ("not_connected", "not_connected"),
+                    ("unknown", "unknown"),
+                    ("duration", "duration"),
+                ):
+                    group[target] += int(row[source] or 0)
+            items = []
+            for group in groups.values():
+                item = {
+                    "kind": "cluster",
+                    "latitude": group["latitude_total"] / group["devices"],
+                    "longitude": group["longitude_total"] / group["devices"],
+                }
+                item.update(self._map_metrics(group, group["devices"]))
+                items.append(item)
+            truncated = False
+            mode = "clusters"
+        return {
+            "generatedAt": iso_timestamp(),
+            "rangeDays": days,
+            "zoom": zoom,
+            "mode": mode,
+            "truncated": truncated,
+            "items": items,
+        }
 
     def dashboard(self, days: int) -> dict[str, Any]:
         today = utc_now().date()
@@ -724,7 +1022,7 @@ class TelemetryHandler(BaseHTTPRequestHandler):
         self.send_header(
             "Content-Security-Policy",
             "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; "
-            "img-src 'none'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+            "img-src 'self' data: https:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
         )
 
     def respond(self, status: int, body: bytes, content_type: str) -> None:
@@ -848,7 +1146,12 @@ class TelemetryHandler(BaseHTTPRequestHandler):
                 self.redirect("/login")
                 return
             template = (self.app.config.static_dir / "dashboard.html").read_text(encoding="utf-8")
-            body = template.replace("__CSRF_TOKEN__", html.escape(session[1], quote=True)).encode()
+            body = (
+                template.replace("__CSRF_TOKEN__", html.escape(session[1], quote=True))
+                .replace("__MAP_TILE_URL__", html.escape(self.app.config.map_tile_url, quote=True))
+                .replace("__MAP_ATTRIBUTION__", html.escape(self.app.config.map_attribution, quote=True))
+                .encode()
+            )
             self.respond(HTTPStatus.OK, body, "text/html; charset=utf-8")
             return
         if path.path == "/admin/api/dashboard":
@@ -864,6 +1167,34 @@ class TelemetryHandler(BaseHTTPRequestHandler):
                 return
             self.json_response(HTTPStatus.OK, self.app.database.dashboard(days))
             return
+        if path.path == "/admin/api/map":
+            if self.require_session() is None:
+                return
+            query = urllib.parse.parse_qs(path.query)
+            try:
+                days = int(query.get("days", ["30"])[0])
+                zoom = int(query.get("zoom", [""])[0])
+                bounds_values = [float(value) for value in query.get("bbox", [""])[0].split(",")]
+                if len(bounds_values) != 4 or not all(math.isfinite(value) for value in bounds_values):
+                    raise ValueError
+                west, south, east, north = bounds_values
+                if (
+                    days not in ALLOWED_RANGE_DAYS
+                    or not 0 <= zoom <= 20
+                    or not -180 <= west <= 180
+                    or not -180 <= east <= 180
+                    or not -85.051129 <= south < north <= 85.051129
+                    or west == east
+                ):
+                    raise ValueError
+            except (ValueError, TypeError):
+                self.json_response(HTTPStatus.BAD_REQUEST, {"message": "地图范围无效"})
+                return
+            self.json_response(
+                HTTPStatus.OK,
+                self.app.database.map_data(days, zoom, (west, south, east, north)),
+            )
+            return
         if path.path == "/admin/api/announcements":
             if self.require_session() is None:
                 return
@@ -871,7 +1202,7 @@ class TelemetryHandler(BaseHTTPRequestHandler):
             return
         if path.path.startswith("/assets/"):
             name = path.path.removeprefix("/assets/")
-            if name not in {"app.css", "dashboard.js", "qrcode.js"}:
+            if name not in {"app.css", "dashboard.js", "qrcode.js", "leaflet.css", "leaflet.js"}:
                 self.respond(HTTPStatus.NOT_FOUND, b"not found\n", "text/plain; charset=utf-8")
                 return
             self.serve_static(name)

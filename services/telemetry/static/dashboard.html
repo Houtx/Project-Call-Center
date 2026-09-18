@@ -4,6 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>外呼运营统计</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/assets/leaflet.css">
   <link rel="stylesheet" href="/assets/app.css">
 </head>
 <body>
@@ -42,6 +44,7 @@
     <div class="dashboard-toolbar">
       <nav class="section-nav" aria-label="页面导航">
         <a href="#overview">运营概览</a>
+        <a href="#map-section">地理分布</a>
         <a href="#announcements-section">终端公告</a>
         <a href="#distribution">终端分布</a>
         <a href="#recent-section">活跃明细</a>
@@ -70,6 +73,42 @@
           </div>
         </div>
         <div id="trend" class="trend-chart" role="group" aria-label="每日外呼趋势"></div>
+      </article>
+    </section>
+
+    <section id="map-section" class="workspace-section" aria-labelledby="map-title">
+      <div class="workspace-heading">
+        <div>
+          <p class="section-kicker">Location</p>
+          <h2 id="map-title">设备地理分布</h2>
+          <p>位置为所选时段内每台设备最近一次采集结果，外呼指标按该时段汇总</p>
+        </div>
+        <span id="map-summary" class="section-summary">正在读取位置</span>
+      </div>
+      <article class="dashboard-panel map-panel">
+        <div class="map-toolbar">
+          <label for="map-metric">地图指标</label>
+          <select id="map-metric">
+            <option value="devices" selected>活跃终端数</option>
+            <option value="calls">外呼量</option>
+            <option value="connected">接通量</option>
+            <option value="notConnected">未接通量</option>
+            <option value="connectionRate">接通率</option>
+            <option value="totalDurationSeconds">总通话时长</option>
+            <option value="averageDurationSeconds">平均通话时长</option>
+          </select>
+          <span id="map-status" class="map-status" aria-live="polite"></span>
+        </div>
+        <div
+          id="distribution-map"
+          class="distribution-map"
+          role="region"
+          aria-label="设备地理分布地图"
+          data-tile-url="__MAP_TILE_URL__"
+          data-attribution="__MAP_ATTRIBUTION__"
+        ></div>
+        <p id="map-error" class="map-error" role="alert" hidden></p>
+        <p class="map-note">缩小地图查看区域聚合，放大至街区级别查看匿名设备点。圆点大小表示当前选择的指标。</p>
       </article>
     </section>
 
@@ -227,6 +266,7 @@
     </div>
   </dialog>
   <script src="/assets/qrcode.js" defer></script>
+  <script src="/assets/leaflet.js" defer></script>
   <script src="/assets/dashboard.js" defer></script>
 </body>
 </html>

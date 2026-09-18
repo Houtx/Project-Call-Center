@@ -113,6 +113,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val locationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) {
+        // Location permission is optional and never changes call readiness.
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         permissionsReady.value = requiredPermissionsGranted()
@@ -146,7 +152,7 @@ class MainActivity : ComponentActivity() {
                             requestPermissions = requestCallPermissions,
                             telemetryAvailable = appContainer.usageTelemetry.isAvailable,
                             telemetryEnabled = telemetryEnabled,
-                            onTelemetryEnabledChange = appContainer.usageTelemetry::setEnabled,
+                            onTelemetryEnabledChange = ::setTelemetryEnabled,
                             onCheckForUpdate = ::checkForUpdateFromSettings,
                             onUseOffline = {
                                 if (!viewModel.state.value.loading && !viewModel.state.value.hasPendingCall) {
@@ -160,7 +166,7 @@ class MainActivity : ComponentActivity() {
                             requestPermissions = requestCallPermissions,
                             telemetryAvailable = appContainer.usageTelemetry.isAvailable,
                             telemetryEnabled = telemetryEnabled,
-                            onTelemetryEnabledChange = appContainer.usageTelemetry::setEnabled,
+                            onTelemetryEnabledChange = ::setTelemetryEnabled,
                             onCheckForUpdate = ::checkForUpdateFromSettings,
                             onUseOnline = {
                                 if (!offlineViewModel.state.value.loading && !offlineViewModel.state.value.hasPendingCall) {
@@ -224,6 +230,7 @@ class MainActivity : ComponentActivity() {
                 null -> Unit
             }
             settleReturnedSystemManagedCall()
+            requestLocationPermissionIfNeeded()
         }
     }
 
@@ -368,6 +375,7 @@ class MainActivity : ComponentActivity() {
             AppMode.OFFLINE -> offlineViewModel.onReturnedToForeground()
             null -> Unit
         }
+        requestLocationPermissionIfNeeded()
     }
 
     private fun beginAnnouncementCheck() {
@@ -445,6 +453,7 @@ class MainActivity : ComponentActivity() {
             pendingSystemManagedAuthorization = authorization
             systemManagedCallWentToBackground = false
         }
+        appContainer.usageTelemetry.captureLocationOnFirstCall()
         runCatching { appContainer.simCallManager.placeCall(authorization.phone) }
             .onSuccess { route ->
                 if (route == CallLaunchRoute.SYSTEM_MANAGED) {
@@ -529,6 +538,22 @@ class MainActivity : ComponentActivity() {
             Log.d(LOG_TAG, "Missing call permissions: ${missingPermissions.joinToString()}")
         }
         return missingPermissions.isEmpty()
+    }
+
+    private fun setTelemetryEnabled(enabled: Boolean) {
+        appContainer.usageTelemetry.setEnabled(enabled)
+        if (enabled) requestLocationPermissionIfNeeded()
+    }
+
+    private fun requestLocationPermissionIfNeeded() {
+        if (!applicationOperationsStarted || !appContainer.usageTelemetry.shouldRequestLocationPermission()) return
+        appContainer.usageTelemetry.markLocationPermissionRequested()
+        locationPermissionLauncher.launch(
+            arrayOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+            ),
+        )
     }
 
     private companion object {

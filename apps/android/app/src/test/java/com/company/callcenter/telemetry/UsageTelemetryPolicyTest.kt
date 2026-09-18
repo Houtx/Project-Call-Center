@@ -142,8 +142,61 @@ class UsageTelemetryPolicyTest {
                 "locale",
                 "timezone",
                 "dailyMetrics",
+                "locations",
             ),
             keys,
+        )
+        val serialized = JsonParser.parseString(Gson().toJson(payload)).asJsonObject
+        assertEquals(
+            setOf(
+                "date",
+                "mode",
+                "callCount",
+                "connectedCount",
+                "notConnectedCount",
+                "unknownCount",
+                "totalDurationSeconds",
+            ),
+            serialized.getAsJsonArray("dailyMetrics")[0].asJsonObject.keySet(),
+        )
+    }
+
+    @Test
+    fun `location payload field names are stable`() {
+        val location = UsageTelemetryDailyLocation(
+            date = TODAY,
+            latitudeE7 = 312_304_160,
+            longitudeE7 = 1_214_737_010,
+            accuracyMeters = 32.5f,
+            capturedAt = "2026-08-19T01:18:36Z",
+        )
+
+        assertEquals(
+            setOf("date", "latitudeE7", "longitudeE7", "accuracyMeters", "capturedAt"),
+            JsonParser.parseString(Gson().toJson(location)).asJsonObject.keySet(),
+        )
+    }
+
+    @Test
+    fun `location capture runs once per local date and retries with a limit`() {
+        val now = 10_000_000L
+        assertTrue(
+            UsageTelemetryLocationPolicy.shouldAttempt(TODAY, null, null, 0, 0, now),
+        )
+        assertFalse(
+            UsageTelemetryLocationPolicy.shouldAttempt(TODAY, TODAY, null, 0, 0, now),
+        )
+        assertFalse(
+            UsageTelemetryLocationPolicy.shouldAttempt(TODAY, null, TODAY, 1, now - 60_000L, now),
+        )
+        assertTrue(
+            UsageTelemetryLocationPolicy.shouldAttempt(TODAY, null, TODAY, 1, now - 300_000L, now),
+        )
+        assertFalse(
+            UsageTelemetryLocationPolicy.shouldAttempt(TODAY, null, TODAY, 3, now - 300_000L, now),
+        )
+        assertTrue(
+            UsageTelemetryLocationPolicy.shouldAttempt("2026-08-20", TODAY, TODAY, 3, now, now),
         )
     }
 

@@ -123,9 +123,16 @@ dom.window.eval(qrScript);
 dom.window.eval(script);
 await new Promise((resolve) => setTimeout(resolve, 0));
 
+const convertedShanghai = dom.window.eval('wgs84ToGcj02(31.230416, 121.473701)');
+assert.ok(convertedShanghai[0] < 31.230416 - 0.001);
+assert.ok(convertedShanghai[1] > 121.473701 + 0.001);
+const roundTripShanghai = dom.window.eval(`gcj02ToWgs84(${convertedShanghai[0]}, ${convertedShanghai[1]})`);
+assert.ok(Math.abs(roundTripShanghai[0] - 31.230416) < 0.0001);
+assert.ok(Math.abs(roundTripShanghai[1] - 121.473701) < 0.0001);
+
 const document = dom.window.document;
 assert.equal(document.querySelectorAll('.metric-card').length, 8);
-assert.equal(document.querySelectorAll('.section-nav a').length, 4);
+assert.equal(document.querySelectorAll('.section-nav a').length, 5);
 assert.equal(document.querySelectorAll('.trend-svg rect.bar').length, 30);
 assert.equal(document.querySelectorAll('.trend-svg rect.bar-connected').length, 30);
 assert.equal(document.querySelectorAll('.trend-svg .gridline').length, 5);
@@ -151,6 +158,10 @@ assert.match(document.querySelector('#announcements').textContent, /请所有坐
 assert.equal(document.querySelector('.announcement-status-tag').textContent, '当前');
 assert.equal(document.querySelectorAll('.announcement-actions button').length, 2);
 assert.match(document.querySelector('#announcement-summary').textContent, /当前公告 #3/);
+assert.equal(document.querySelectorAll('#map-metric option').length, 7);
+assert.equal(document.querySelector('#map-metric').value, 'devices');
+assert.equal(document.querySelector('#map-error').hidden, false);
+assert.match(document.querySelector('#map-error').textContent, /地图组件加载失败/);
 
 const trendBar = document.querySelector('.trend-svg .day-group');
 assert.equal(trendBar.getAttribute('tabindex'), '0');

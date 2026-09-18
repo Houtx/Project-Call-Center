@@ -24,9 +24,10 @@ from telemetry_server import (
 
 
 def payload(identifier: str = "8d21d0ef-23ae-4df0-a090-6b7d44d4a111") -> dict:
+    now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
     return {
         "anonymousId": identifier,
-        "date": dt.datetime.now(dt.timezone.utc).date().isoformat(),
+        "date": now.date().isoformat(),
         "appVersion": "0.6.6",
         "androidApi": 35,
         "mode": "offline",
@@ -34,13 +35,22 @@ def payload(identifier: str = "8d21d0ef-23ae-4df0-a090-6b7d44d4a111") -> dict:
         "timezone": "Asia/Shanghai",
         "dailyMetrics": [
             {
-                "date": dt.datetime.now(dt.timezone.utc).date().isoformat(),
+                "date": now.date().isoformat(),
                 "mode": "offline",
                 "callCount": 4,
                 "connectedCount": 2,
                 "notConnectedCount": 1,
                 "unknownCount": 1,
                 "totalDurationSeconds": 180,
+            }
+        ],
+        "locations": [
+            {
+                "date": now.date().isoformat(),
+                "latitudeE7": 312_304_160,
+                "longitudeE7": 1_214_737_010,
+                "accuracyMeters": 32.5,
+                "capturedAt": now.isoformat().replace("+00:00", "Z"),
             }
         ],
     }
@@ -174,6 +184,26 @@ class TelemetryServerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must equal"):
             validate_payload(invalid)
 
+    def test_payload_validates_location_bounds_accuracy_and_timestamp(self) -> None:
+        valid = validate_payload(payload())
+        self.assertEqual(312_304_160, valid["locations"][0]["latitudeE7"])
+        self.assertEqual(32.5, valid["locations"][0]["accuracyMeters"])
+
+        for field, value in (
+            ("latitudeE7", 900_000_001),
+            ("longitudeE7", -1_800_000_001),
+            ("accuracyMeters", float("inf")),
+            ("accuracyMeters", -1),
+        ):
+            invalid = payload()
+            invalid["locations"][0][field] = value
+            with self.assertRaisesRegex(ValueError, "out of range"):
+                validate_payload(invalid)
+        invalid = payload()
+        invalid["locations"][0]["capturedAt"] = "2026-09-18 12:00:00"
+        with self.assertRaisesRegex(ValueError, "timezone"):
+            validate_payload(invalid)
+
     def test_ingest_is_idempotent_and_dashboard_is_aggregated(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database = TelemetryDatabase(
@@ -191,6 +221,51 @@ class TelemetryServerTest(unittest.TestCase):
             self.assertEqual(4, dashboard["metrics"]["callCount"])
             self.assertEqual("203.0.113.*", dashboard["recent"][0]["ip_masked"])
             self.assertNotIn(report["anonymousId"], str(dashboard))
+            map_devices = database.map_data(30, 14, (120, 30, 123, 33))
+            self.assertEqual("devices", map_devices["mode"])
+            self.assertEqual(1, len(map_devices["items"]))
+            self.assertEqual(4, map_devices["items"][0]["calls"])
+            self.assertEqual(1, map_devices["items"][0]["devices"])
+
+            second = payload("5f3094e4-439a-49f7-a3a6-8af0f86c5c22")
+            second["locations"][0]["latitudeE7"] += 100
+            second["locations"][0]["longitudeE7"] += 100
+            database.ingest(validate_payload(second), "203.0.113.90", "CN")
+            clusters = database.map_data(30, 8, (120, 30, 123, 33))
+            self.assertEqual("clusters", clusters["mode"])
+            self.assertEqual(1, len(clusters["items"]))
+            self.assertEqual(2, clusters["items"][0]["devices"])
+            self.assertEqual(8, clusters["items"][0]["calls"])
+
+            with database.connection() as stored:
+                location_count = stored.execute(
+                    "SELECT COUNT(*) AS value FROM installation_locations"
+                ).fetchone()["value"]
+            self.assertEqual(2, location_count)
+
+    def test_location_retention_cleanup_runs_during_ingest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = TelemetryDatabase(
+                Path(directory) / "telemetry.sqlite3",
+                b"identifier-secret",
+                30,
+                encode_password("initial administrator password"),
+            )
+            with database.connection() as stored:
+                stored.execute(
+                    """
+                    INSERT INTO installation_locations (
+                        install_hash, location_date, latitude_e7, longitude_e7,
+                        accuracy_meters, captured_at, updated_at
+                    ) VALUES ('old-install', '2020-01-01', 0, 0, 1, '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z')
+                    """
+                )
+            database.ingest(validate_payload(payload()), "203.0.113.89", "CN")
+            with database.connection() as stored:
+                old_count = stored.execute(
+                    "SELECT COUNT(*) AS value FROM installation_locations WHERE install_hash = 'old-install'"
+                ).fetchone()["value"]
+            self.assertEqual(0, old_count)
 
     def test_changed_admin_password_persists_and_increments_session_version(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -257,8 +332,17 @@ class TelemetryServerTest(unittest.TestCase):
                 self.assertEqual(200, status)
                 self.assertEqual("text/javascript; charset=utf-8", headers["content-type"])
                 self.assertIn(b"var qrcode=", body)
+                status, headers, _ = request("GET", "/assets/leaflet.js")
+                self.assertEqual(200, status)
+                self.assertEqual("text/javascript; charset=utf-8", headers["content-type"])
+                status, headers, _ = request("GET", "/assets/leaflet.css")
+                self.assertEqual(200, status)
+                self.assertEqual("text/css; charset=utf-8", headers["content-type"])
                 self.assertEqual(204, request("GET", "/api/app/v1/announcement/latest")[0])
                 self.assertEqual(401, request("GET", "/admin/api/announcements")[0])
+                self.assertEqual(401, request(
+                    "GET", "/admin/api/map?days=30&zoom=8&bbox=120,30,123,33"
+                )[0])
 
                 status, headers, _ = request(
                     "POST",
@@ -270,9 +354,22 @@ class TelemetryServerTest(unittest.TestCase):
 
                 status, _, dashboard = request("GET", "/admin", cookie=old_cookie)
                 self.assertEqual(200, status)
+                self.assertIn(b"webrd02.is.autonavi.com", dashboard)
+                self.assertIn("高德地图".encode(), dashboard)
                 csrf_match = re.search(rb'name="csrf" value="([a-f0-9]+)"', dashboard)
                 self.assertIsNotNone(csrf_match)
                 csrf = csrf_match.group(1).decode()
+
+                status, _, body = request(
+                    "GET",
+                    "/admin/api/map?days=30&zoom=8&bbox=120,30,123,33",
+                    cookie=old_cookie,
+                )
+                self.assertEqual(200, status)
+                self.assertEqual("clusters", json.loads(body)["mode"])
+                self.assertEqual(400, request(
+                    "GET", "/admin/api/map?days=30&zoom=99&bbox=120,30,123,33", cookie=old_cookie
+                )[0])
 
                 status, _, body = request(
                     "POST",

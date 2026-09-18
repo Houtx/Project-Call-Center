@@ -280,6 +280,297 @@ function renderRecent(rows) {
   byId('recent').replaceChildren(...nodes);
 }
 
+const mapMetricLabels = {
+  devices: '活跃终端数',
+  calls: '外呼量',
+  connected: '接通量',
+  notConnected: '未接通量',
+  connectionRate: '接通率',
+  totalDurationSeconds: '总通话时长',
+  averageDurationSeconds: '平均通话时长',
+};
+let distributionMap = null;
+let distributionLayer = null;
+let mapData = null;
+let mapRequestController = null;
+let mapRequestTimer = null;
+
+const gcjPi = Math.PI;
+const gcjEarthRadius = 6378245.0;
+const gcjEccentricity = 0.006693421622965943;
+
+function outsideMainlandChina(latitude, longitude) {
+  return longitude < 72.004 || longitude > 137.8347 || latitude < 0.8293 || latitude > 55.8271;
+}
+
+function transformGcjLatitude(x, y) {
+  let result = -100 + 2 * x + 3 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x));
+  result += (20 * Math.sin(6 * x * gcjPi) + 20 * Math.sin(2 * x * gcjPi)) * 2 / 3;
+  result += (20 * Math.sin(y * gcjPi) + 40 * Math.sin(y / 3 * gcjPi)) * 2 / 3;
+  result += (160 * Math.sin(y / 12 * gcjPi) + 320 * Math.sin(y * gcjPi / 30)) * 2 / 3;
+  return result;
+}
+
+function transformGcjLongitude(x, y) {
+  let result = 300 + x + 2 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x));
+  result += (20 * Math.sin(6 * x * gcjPi) + 20 * Math.sin(2 * x * gcjPi)) * 2 / 3;
+  result += (20 * Math.sin(x * gcjPi) + 40 * Math.sin(x / 3 * gcjPi)) * 2 / 3;
+  result += (150 * Math.sin(x / 12 * gcjPi) + 300 * Math.sin(x / 30 * gcjPi)) * 2 / 3;
+  return result;
+}
+
+function wgs84ToGcj02(latitude, longitude) {
+  if (outsideMainlandChina(latitude, longitude)) return [latitude, longitude];
+  let latitudeDelta = transformGcjLatitude(longitude - 105, latitude - 35);
+  let longitudeDelta = transformGcjLongitude(longitude - 105, latitude - 35);
+  const radians = latitude / 180 * gcjPi;
+  let magic = Math.sin(radians);
+  magic = 1 - gcjEccentricity * magic * magic;
+  const rootMagic = Math.sqrt(magic);
+  latitudeDelta = latitudeDelta * 180 / (
+    (gcjEarthRadius * (1 - gcjEccentricity)) / (magic * rootMagic) * gcjPi
+  );
+  longitudeDelta = longitudeDelta * 180 / (
+    gcjEarthRadius / rootMagic * Math.cos(radians) * gcjPi
+  );
+  return [latitude + latitudeDelta, longitude + longitudeDelta];
+}
+
+function gcj02ToWgs84(latitude, longitude) {
+  if (outsideMainlandChina(latitude, longitude)) return [latitude, longitude];
+  const converted = wgs84ToGcj02(latitude, longitude);
+  return [latitude * 2 - converted[0], longitude * 2 - converted[1]];
+}
+
+function mapMetricValue(item, metricName = byId('map-metric').value) {
+  return numeric(item[metricName]);
+}
+
+function formatMapMetric(value, metricName = byId('map-metric').value) {
+  if (metricName === 'connectionRate') return `${(value * 100).toFixed(1)}%`;
+  if (metricName === 'totalDurationSeconds' || metricName === 'averageDurationSeconds') return duration(value);
+  return number.format(Math.round(value));
+}
+
+function formatMarkerValue(value, metricName) {
+  if (metricName === 'connectionRate') return `${Math.round(value * 100)}%`;
+  if (metricName === 'totalDurationSeconds' || metricName === 'averageDurationSeconds') {
+    if (value >= 3600) return `${(value / 3600).toFixed(value >= 36_000 ? 0 : 1)}h`;
+    return `${Math.round(value / 60)}m`;
+  }
+  if (value >= 10_000) return `${(value / 10_000).toFixed(value >= 100_000 ? 0 : 1)}万`;
+  return number.format(Math.round(value));
+}
+
+function aggregateMapItems(items) {
+  const first = items[0];
+  const aggregate = {
+    kind: 'device-group',
+    latitude: first.latitude,
+    longitude: first.longitude,
+    devices: items.length,
+    calls: 0,
+    connected: 0,
+    notConnected: 0,
+    unknown: 0,
+    totalDurationSeconds: 0,
+    members: items,
+  };
+  items.forEach((item) => {
+    aggregate.calls += numeric(item.calls);
+    aggregate.connected += numeric(item.connected);
+    aggregate.notConnected += numeric(item.notConnected);
+    aggregate.unknown += numeric(item.unknown);
+    aggregate.totalDurationSeconds += numeric(item.totalDurationSeconds);
+  });
+  const denominator = aggregate.connected + aggregate.notConnected;
+  aggregate.connectionRate = denominator ? aggregate.connected / denominator : 0;
+  aggregate.averageDurationSeconds = aggregate.connected
+    ? aggregate.totalDurationSeconds / aggregate.connected
+    : 0;
+  return aggregate;
+}
+
+function groupIdenticalDevices(items) {
+  const groups = new Map();
+  items.forEach((item) => {
+    const key = `${Number(item.latitude).toFixed(7)},${Number(item.longitude).toFixed(7)}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  });
+  return [...groups.values()].map(aggregateMapItems);
+}
+
+function appendPopupMetric(list, label, value) {
+  const term = document.createElement('dt');
+  const detail = document.createElement('dd');
+  term.textContent = label;
+  detail.textContent = value;
+  list.append(term, detail);
+}
+
+function createMapPopup(item) {
+  const popup = document.createElement('div');
+  popup.className = 'map-popup';
+  const title = document.createElement('h4');
+  title.textContent = item.kind === 'cluster'
+    ? `区域聚合 · ${number.format(item.devices)} 台终端`
+    : item.devices > 1
+      ? `同一位置 · ${number.format(item.devices)} 台终端`
+      : `设备 ${item.members[0].installation}`;
+  const details = document.createElement('dl');
+  appendPopupMetric(details, '外呼量', number.format(item.calls));
+  appendPopupMetric(details, '接通 / 未接', `${number.format(item.connected)} / ${number.format(item.notConnected)}`);
+  appendPopupMetric(details, '接通率', `${(numeric(item.connectionRate) * 100).toFixed(1)}%`);
+  appendPopupMetric(details, '总通话时长', duration(item.totalDurationSeconds));
+  popup.append(title, details);
+  if (item.members) {
+    const list = document.createElement('ul');
+    list.className = 'map-device-list';
+    item.members.forEach((device) => {
+      const entry = document.createElement('li');
+      entry.textContent = `${device.installation} · ${dateTime.format(new Date(device.capturedAt))} · 精度 ${Math.round(numeric(device.accuracyMeters))} 米 · 外呼 ${number.format(device.calls)}`;
+      list.append(entry);
+    });
+    popup.append(list);
+  }
+  return popup;
+}
+
+function markerIcon(value, size, grouped = false) {
+  const text = formatMarkerValue(value, byId('map-metric').value);
+  const marker = document.createElement('span');
+  marker.className = `map-value-marker${grouped ? ' device-group' : ''}`;
+  marker.textContent = text;
+  return globalThis.L.divIcon({
+    className: 'map-value-icon',
+    html: marker.outerHTML,
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2],
+  });
+}
+
+function renderMap() {
+  if (!distributionMap || !distributionLayer || !mapData) return;
+  distributionLayer.clearLayers();
+  const metricName = byId('map-metric').value;
+  const sourceItems = mapData.mode === 'devices'
+    ? groupIdenticalDevices(mapData.items)
+    : mapData.items;
+  const maximum = Math.max(1, ...sourceItems.map((item) => mapMetricValue(item, metricName)));
+  sourceItems.forEach((item) => {
+    const value = mapMetricValue(item, metricName);
+    const mapCoordinates = wgs84ToGcj02(Number(item.latitude), Number(item.longitude));
+    if (item.kind === 'cluster') {
+      const size = 36 + Math.round(Math.sqrt(value / maximum) * 28);
+      const marker = globalThis.L.marker(mapCoordinates, {
+        icon: markerIcon(value, size),
+        keyboard: true,
+        title: `${mapMetricLabels[metricName]} ${formatMapMetric(value, metricName)}`,
+      }).addTo(distributionLayer);
+      marker.bindTooltip(createMapPopup(item), { direction: 'top', offset: [0, -size / 2] });
+      marker.on('click', () => {
+        distributionMap.setView(marker.getLatLng(), Math.min(13, distributionMap.getZoom() + 2));
+      });
+      return;
+    }
+    let marker;
+    if (item.devices > 1) {
+      const size = 38 + Math.min(18, Math.round(Math.sqrt(item.devices) * 4));
+      marker = globalThis.L.marker(mapCoordinates, {
+        icon: markerIcon(item.devices, size, true),
+        keyboard: true,
+        title: `同一位置 ${number.format(item.devices)} 台终端`,
+      });
+    } else {
+      marker = globalThis.L.circleMarker(mapCoordinates, {
+        radius: 8,
+        color: '#ffffff',
+        weight: 2,
+        fillColor: '#1689a0',
+        fillOpacity: 0.92,
+      });
+    }
+    marker.addTo(distributionLayer).bindPopup(createMapPopup(item), { maxWidth: 360 });
+  });
+  const deviceCount = mapData.items.reduce((sum, item) => sum + numeric(item.devices), 0);
+  byId('map-summary').textContent = `已定位 ${number.format(deviceCount)} 台终端 · ${number.format(sourceItems.length)} 个地图点`;
+  byId('map-status').textContent = mapData.truncated
+    ? `当前区域设备过多，已显示前 ${number.format(mapData.items.length)} 台，请放大查看`
+    : `缩放级别 ${mapData.zoom} · ${mapData.mode === 'clusters' ? '区域聚合' : '设备明细'}`;
+}
+
+function normalizedMapBounds() {
+  const bounds = distributionMap.getBounds();
+  const westRaw = bounds.getWest();
+  const eastRaw = bounds.getEast();
+  if (eastRaw - westRaw >= 360) return [-180, bounds.getSouth(), 180, bounds.getNorth()];
+  const normalizeLongitude = (value) => ((value + 180) % 360 + 360) % 360 - 180;
+  const west = normalizeLongitude(westRaw);
+  const east = normalizeLongitude(eastRaw);
+  const south = Math.max(-85.051129, bounds.getSouth());
+  const north = Math.min(85.051129, bounds.getNorth());
+  const southWest = gcj02ToWgs84(south, west);
+  const northEast = gcj02ToWgs84(north, east);
+  return [southWest[1], southWest[0], northEast[1], northEast[0]];
+}
+
+async function loadMap() {
+  if (!distributionMap) return;
+  if (mapRequestController) mapRequestController.abort();
+  mapRequestController = typeof AbortController === 'function' ? new AbortController() : null;
+  byId('map-error').hidden = true;
+  byId('map-status').textContent = '正在读取当前地图范围';
+  const bounds = normalizedMapBounds().map((value) => value.toFixed(6)).join(',');
+  const params = new URLSearchParams({
+    days: byId('range').value,
+    zoom: String(distributionMap.getZoom()),
+    bbox: bounds,
+  });
+  const options = { credentials: 'same-origin', cache: 'no-store' };
+  if (mapRequestController) options.signal = mapRequestController.signal;
+  try {
+    const response = await fetch(`/admin/api/map?${params}`, options);
+    if (response.status === 401) { location.href = '/login'; return; }
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    mapData = await response.json();
+    if (!mapData || !Array.isArray(mapData.items)) throw new Error('地图数据格式无效');
+    renderMap();
+  } catch (error) {
+    if (error.name === 'AbortError') return;
+    byId('map-error').textContent = `地图数据加载失败：${error.message}`;
+    byId('map-error').hidden = false;
+    byId('map-status').textContent = '地图数据不可用';
+  }
+}
+
+function scheduleMapLoad() {
+  clearTimeout(mapRequestTimer);
+  mapRequestTimer = setTimeout(loadMap, 180);
+}
+
+function initDistributionMap() {
+  if (!globalThis.L) {
+    byId('map-error').textContent = '地图组件加载失败，请刷新页面重试';
+    byId('map-error').hidden = false;
+    byId('map-summary').textContent = '地图不可用';
+    return;
+  }
+  const container = byId('distribution-map');
+  const tileUrl = container.dataset.tileUrl.startsWith('__')
+    ? 'https://webrd02.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}'
+    : container.dataset.tileUrl;
+  const attribution = container.dataset.attribution.startsWith('__')
+    ? '高德地图'
+    : container.dataset.attribution;
+  distributionMap = globalThis.L.map(container, { preferCanvas: true, minZoom: 2, maxZoom: 20 })
+    .setView([34.5, 105], 3);
+  globalThis.L.tileLayer(tileUrl, { attribution, maxZoom: 20 }).addTo(distributionMap);
+  distributionLayer = globalThis.L.layerGroup().addTo(distributionMap);
+  distributionMap.on('moveend', scheduleMapLoad);
+  distributionMap.whenReady(loadMap);
+}
+
 let announcementsById = new Map();
 
 function renderAnnouncements(rows) {
@@ -672,8 +963,16 @@ announcementEditForm.addEventListener('submit', async (event) => {
   }
 });
 
-byId('range').addEventListener('change', load);
-byId('refresh').addEventListener('click', load);
+byId('range').addEventListener('change', () => {
+  load();
+  loadMap();
+});
+byId('refresh').addEventListener('click', () => {
+  load();
+  loadMap();
+});
+byId('map-metric').addEventListener('change', renderMap);
+initDistributionMap();
 load();
 loadAnnouncements().catch((error) => {
   announcementStatus.textContent = error.message;
