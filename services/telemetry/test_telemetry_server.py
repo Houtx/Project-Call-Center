@@ -173,6 +173,22 @@ class TelemetryServerTest(unittest.TestCase):
         normalized_legacy = validate_payload(legacy)
         self.assertEqual("legacy", normalized_legacy["appVersion"])
         self.assertEqual(4, normalized_legacy["dailyMetrics"][0]["callCount"])
+        legacy["h"] = [dict(zip("abcde", valid["locations"][0].values()))]
+        normalized_v074 = validate_payload(legacy)
+        self.assertEqual("0.7.4", normalized_v074["appVersion"])
+        self.assertEqual(valid["locations"], normalized_v074["locations"])
+        with tempfile.TemporaryDirectory() as directory:
+            database = TelemetryDatabase(Path(directory) / "test.sqlite3", b"secret", 30, encode_password("test-password"))
+            database.ingest(normalized_v074, "127.0.0.1", "CN")
+            database.ingest(normalized_v074, "127.0.0.1", "CN")
+            with sqlite3.connect(Path(directory) / "test.sqlite3") as db:
+                self.assertEqual(1, db.execute("SELECT COUNT(*) FROM installation_locations").fetchone()[0])
+        legacy["h"][0]["b"] = 900_000_001
+        with self.assertRaisesRegex(ValueError, "out of range"):
+            validate_payload(legacy)
+        legacy["h"][0]["extra"] = True
+        with self.assertRaisesRegex(ValueError, "invalid"):
+            validate_payload(legacy)
         api_26 = payload()
         api_26["androidApi"] = 26
         self.assertEqual(26, validate_payload(api_26)["androidApi"])

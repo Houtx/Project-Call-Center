@@ -85,6 +85,8 @@ fun AgentApp(
     viewModel: AgentViewModel,
     permissionsGranted: Boolean,
     requestPermissions: () -> Unit,
+    locationPermissionStatus: LocationPermissionStatus,
+    requestLocationPermission: () -> Unit,
     telemetryAvailable: Boolean,
     telemetryEnabled: Boolean,
     onTelemetryEnabledChange: (Boolean) -> Unit,
@@ -100,6 +102,8 @@ fun AgentApp(
                 state = state,
                 permissionsGranted = permissionsGranted,
                 requestPermissions = requestPermissions,
+                locationPermissionStatus = locationPermissionStatus,
+                requestLocationPermission = requestLocationPermission,
                 telemetryAvailable = telemetryAvailable,
                 telemetryEnabled = telemetryEnabled,
                 onTelemetryEnabledChange = onTelemetryEnabledChange,
@@ -210,6 +214,8 @@ private fun MainScreen(
     state: AgentUiState,
     permissionsGranted: Boolean,
     requestPermissions: () -> Unit,
+    locationPermissionStatus: LocationPermissionStatus,
+    requestLocationPermission: () -> Unit,
     telemetryAvailable: Boolean,
     telemetryEnabled: Boolean,
     onTelemetryEnabledChange: (Boolean) -> Unit,
@@ -304,6 +310,8 @@ private fun MainScreen(
                     state,
                     permissionsGranted,
                     requestPermissions,
+                    locationPermissionStatus,
+                    requestLocationPermission,
                     viewModel::logout,
                     viewModel::changeServer,
                     viewModel::setSimDialMode,
@@ -497,6 +505,8 @@ private fun AccountScreen(
     state: AgentUiState,
     permissionsGranted: Boolean,
     requestPermissions: () -> Unit,
+    locationPermissionStatus: LocationPermissionStatus,
+    requestLocationPermission: () -> Unit,
     onLogout: () -> Unit,
     onChangeServer: () -> Unit,
     onSimModeChange: (SimDialMode) -> Unit,
@@ -523,6 +533,9 @@ private fun AccountScreen(
             if (!permissionsGranted) FilledTonalButton(onClick = requestPermissions) {
                 Icon(Icons.Outlined.LockOpen, null)
                 Text("重新授权", modifier = Modifier.padding(start = 6.dp))
+            }
+            if (telemetryAvailable) {
+                LocationPermissionSetting(locationPermissionStatus, requestLocationPermission)
             }
         }
         SettingsSection("SIM 拨号") { SimDialSettings(state.simDial, onSimModeChange) }

@@ -105,13 +105,15 @@ def optional_text(value: Any, field: str, pattern: re.Pattern[str], fallback: st
 
 
 def normalize_legacy_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Translate the minified 0.6.7 release payload without accepting arbitrary keys.
+    """Translate known minified release payloads without accepting arbitrary keys.
 
     R8 removed the compile-time appVersion field and renamed the remaining Gson
     fields to a-g. The field order is stable in the release mapping, so this
     narrowly scoped translation preserves telemetry from already-installed APKs.
+    The 0.7.4 mapping adds h (locations), with location fields a-e.
     """
-    if set(payload) != LEGACY_PAYLOAD_KEYS:
+    has_locations = set(payload) == LEGACY_PAYLOAD_KEYS | {"h"}
+    if set(payload) != LEGACY_PAYLOAD_KEYS and not has_locations:
         return payload
 
     metrics = payload.get("g")
@@ -134,16 +136,31 @@ def normalize_legacy_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 normalized_metrics.append(item)
         metrics = normalized_metrics
 
+    locations = payload.get("h", [])
+    if isinstance(locations, list):
+        locations = [
+            {
+                "date": item["a"],
+                "latitudeE7": item["b"],
+                "longitudeE7": item["c"],
+                "accuracyMeters": item["d"],
+                "capturedAt": item["e"],
+            }
+            if isinstance(item, dict) and set(item) == {"a", "b", "c", "d", "e"}
+            else item
+            for item in locations
+        ]
+
     return {
         "anonymousId": payload.get("a"),
         "date": payload.get("b"),
-        "appVersion": "legacy",
+        "appVersion": "0.7.4" if has_locations else "legacy",
         "androidApi": payload.get("c"),
         "mode": payload.get("d"),
         "locale": payload.get("e"),
         "timezone": payload.get("f"),
         "dailyMetrics": metrics,
-        "locations": [],
+        "locations": locations,
     }
 
 

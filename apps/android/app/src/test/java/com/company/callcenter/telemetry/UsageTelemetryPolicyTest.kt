@@ -200,6 +200,75 @@ class UsageTelemetryPolicyTest {
         )
     }
 
+    @Test
+    fun `fresh fixes received after acquisition started are accepted`() {
+        val requestStarted = 100_000L
+        val capturedAt = requestStarted + 1_000
+        val callbackAt = requestStarted + 1_100
+        assertTrue(UsageTelemetryLocationPolicy.isFresh(capturedAt, callbackAt, 120_000))
+        assertFalse(UsageTelemetryLocationPolicy.isFresh(callbackAt - 120_001, callbackAt, 120_000))
+        assertFalse(UsageTelemetryLocationPolicy.isFresh(callbackAt + 1, callbackAt, 120_000))
+    }
+
+    @Test
+    fun `location permission can be requested twice before settings are required`() {
+        assertTrue(UsageTelemetryLocationPermissionPolicy.canRequestFromSystem(0, false))
+        assertTrue(UsageTelemetryLocationPermissionPolicy.canRequestFromSystem(1, true))
+        assertTrue(
+            UsageTelemetryLocationPermissionPolicy.canRequestFromSystem(
+                promptCount = 1,
+                shouldShowRationale = false,
+                hasApproximateLocation = true,
+            ),
+        )
+        assertFalse(UsageTelemetryLocationPermissionPolicy.canRequestFromSystem(1, false))
+        assertFalse(UsageTelemetryLocationPermissionPolicy.canRequestFromSystem(2, true))
+    }
+
+    @Test
+    fun `automatic location permission prompt runs at most once per local date`() {
+        assertTrue(
+            UsageTelemetryLocationPermissionPolicy.shouldAutoRequest(
+                promptCount = 0,
+                lastPromptDate = null,
+                localDate = TODAY,
+                canRequestFromSystem = true,
+            ),
+        )
+        assertFalse(
+            UsageTelemetryLocationPermissionPolicy.shouldAutoRequest(
+                promptCount = 1,
+                lastPromptDate = TODAY,
+                localDate = TODAY,
+                canRequestFromSystem = true,
+            ),
+        )
+        assertTrue(
+            UsageTelemetryLocationPermissionPolicy.shouldAutoRequest(
+                promptCount = 1,
+                lastPromptDate = TODAY,
+                localDate = "2026-08-20",
+                canRequestFromSystem = true,
+            ),
+        )
+        assertFalse(
+            UsageTelemetryLocationPermissionPolicy.shouldAutoRequest(
+                promptCount = 2,
+                lastPromptDate = TODAY,
+                localDate = "2026-08-20",
+                canRequestFromSystem = true,
+            ),
+        )
+        assertFalse(
+            UsageTelemetryLocationPermissionPolicy.shouldAutoRequest(
+                promptCount = 1,
+                lastPromptDate = TODAY,
+                localDate = "2026-08-20",
+                canRequestFromSystem = false,
+            ),
+        )
+    }
+
     private companion object {
         const val ENDPOINT = "https://metrics.example.com/v1/events"
         const val TODAY = "2026-08-19"

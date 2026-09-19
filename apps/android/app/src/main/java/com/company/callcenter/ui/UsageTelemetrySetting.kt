@@ -56,7 +56,7 @@ internal fun UsageTelemetrySetting(
         }
         Text(
             "公司内部版本默认开启；关闭时需要输入当天管理口令。每天最多发送一次匿名安装标识、APP/Android 版本、使用模式、国家/时区与按日外呼汇总。" +
-                "服务端仅保留脱敏 IP，不包含号码、客户、SIM、服务器、文件或通话明细。",
+                "每天首次外呼会采集一次位置快照；服务端仅保留脱敏 IP，不包含号码、客户、SIM、服务器、文件或通话明细。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

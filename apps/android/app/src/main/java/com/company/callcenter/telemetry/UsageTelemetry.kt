@@ -121,6 +121,9 @@ internal object UsageTelemetryDisablePolicy {
 }
 
 internal object UsageTelemetryLocationPolicy {
+    fun isFresh(capturedAtMillis: Long, checkedAtMillis: Long, maximumAgeMillis: Long): Boolean =
+        checkedAtMillis - capturedAtMillis in 0..maximumAgeMillis
+
     fun shouldAttempt(
         localDate: String,
         capturedDate: String?,
@@ -135,6 +138,27 @@ internal object UsageTelemetryLocationPolicy {
         if (attemptDate != localDate) return true
         return attemptCount < maxAttempts && nowMillis - lastAttemptMillis >= retryIntervalMillis
     }
+}
+
+internal object UsageTelemetryLocationPermissionPolicy {
+    fun canRequestFromSystem(
+        promptCount: Int,
+        shouldShowRationale: Boolean,
+        hasApproximateLocation: Boolean = false,
+    ): Boolean = promptCount < MAX_SYSTEM_PROMPTS &&
+        (promptCount == 0 || shouldShowRationale || hasApproximateLocation)
+
+    fun shouldAutoRequest(
+        promptCount: Int,
+        lastPromptDate: String?,
+        localDate: String,
+        canRequestFromSystem: Boolean,
+    ): Boolean = canRequestFromSystem &&
+        promptCount < MAX_SYSTEM_PROMPTS &&
+        localDate.isNotBlank() &&
+        lastPromptDate != localDate
+
+    const val MAX_SYSTEM_PROMPTS = 2
 }
 
 class UsageTelemetry(
@@ -198,13 +222,32 @@ class UsageTelemetry(
         if (accepted) mutableEnabled.value = persisted
     }
 
-    fun shouldRequestLocationPermission(): Boolean = isAvailable &&
+    fun shouldAutoRequestLocationPermission(canRequestFromSystem: Boolean): Boolean = isAvailable &&
         mutableEnabled.value &&
-        !preferences.getBoolean(LOCATION_PERMISSION_REQUESTED_KEY, false) &&
-        !hasLocationPermission()
+        !hasLocationPermission() &&
+        UsageTelemetryLocationPermissionPolicy.shouldAutoRequest(
+            promptCount = locationPermissionPromptCount(),
+            lastPromptDate = preferences.getString(LOCATION_PERMISSION_LAST_PROMPT_DATE_KEY, null),
+            localDate = LocalDate.now().toString(),
+            canRequestFromSystem = canRequestFromSystem,
+        )
+
+    fun locationPermissionPromptCount(): Int {
+        val storedCount = preferences.getInt(LOCATION_PERMISSION_PROMPT_COUNT_KEY, -1)
+        if (storedCount >= 0) return storedCount
+        return if (preferences.getBoolean(LOCATION_PERMISSION_REQUESTED_KEY, false)) 1 else 0
+    }
 
     fun markLocationPermissionRequested() {
-        preferences.edit().putBoolean(LOCATION_PERMISSION_REQUESTED_KEY, true).apply()
+        preferences.edit()
+            .putBoolean(LOCATION_PERMISSION_REQUESTED_KEY, true)
+            .putInt(
+                LOCATION_PERMISSION_PROMPT_COUNT_KEY,
+                (locationPermissionPromptCount() + 1)
+                    .coerceAtMost(UsageTelemetryLocationPermissionPolicy.MAX_SYSTEM_PROMPTS),
+            )
+            .putString(LOCATION_PERMISSION_LAST_PROMPT_DATE_KEY, LocalDate.now().toString())
+            .apply()
     }
 
     fun captureLocationOnFirstCall() {
@@ -360,7 +403,6 @@ class UsageTelemetry(
         val listeners = mutableListOf<LocationListener>()
         var currentBest: Location? = null
         var completed = false
-        val nowMillis = System.currentTimeMillis()
         var lastKnownBest: Location? = null
 
         fun better(candidate: Location, current: Location?): Location {
@@ -381,7 +423,7 @@ class UsageTelemetry(
                 location.longitude in -180.0..180.0 &&
                 location.hasAccuracy() &&
                 location.accuracy in 0f..MAX_ACCURACY_METERS &&
-                nowMillis - location.time in 0..maximumAgeMillis
+                UsageTelemetryLocationPolicy.isFresh(location.time, System.currentTimeMillis(), maximumAgeMillis)
 
         lateinit var timeout: Runnable
         fun finish(result: Location?) {
@@ -452,6 +494,8 @@ class UsageTelemetry(
         const val ANONYMOUS_ID_KEY = "anonymous_installation_id"
         const val LAST_UPLOAD_DATE_KEY = "last_upload_utc_date"
         const val LOCATION_PERMISSION_REQUESTED_KEY = "location_permission_requested"
+        const val LOCATION_PERMISSION_PROMPT_COUNT_KEY = "location_permission_prompt_count"
+        const val LOCATION_PERMISSION_LAST_PROMPT_DATE_KEY = "location_permission_last_prompt_date"
         const val LOCATION_CAPTURED_DATE_KEY = "location_captured_local_date"
         const val LOCATION_ATTEMPT_DATE_KEY = "location_attempt_local_date"
         const val LOCATION_ATTEMPT_COUNT_KEY = "location_attempt_count"

@@ -1,8 +1,11 @@
 package com.company.callcenter
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import android.util.Log
 import android.view.WindowManager
 import android.widget.Toast
@@ -22,6 +25,7 @@ import com.company.callcenter.ui.AgentViewModel
 import com.company.callcenter.ui.AgentViewModelFactory
 import com.company.callcenter.ui.AppModeScreen
 import com.company.callcenter.ui.CallCenterTheme
+import com.company.callcenter.ui.LocationPermissionStatus
 import com.company.callcenter.ui.OfflineAgentApp
 import com.company.callcenter.ui.OfflineViewModel
 import com.company.callcenter.ui.OfflineViewModelFactory
@@ -31,6 +35,7 @@ import com.company.callcenter.data.AppMode
 import com.company.callcenter.data.DialSource
 import com.company.callcenter.data.offline.OfflineDialAccessPolicy
 import com.company.callcenter.telephony.CallLaunchRoute
+import com.company.callcenter.telemetry.UsageTelemetryLocationPermissionPolicy
 import com.company.callcenter.update.AppUpdateException
 import com.company.callcenter.update.AppUpdateManager
 import com.company.callcenter.update.InstallLaunchResult
@@ -48,6 +53,7 @@ import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val permissionsReady = mutableStateOf(false)
+    private val locationPermissionStatus = mutableStateOf(LocationPermissionStatus.REQUESTABLE)
     private val updateState = MutableStateFlow<StartupUpdateState>(StartupUpdateState.Checking)
     private val updateManager by lazy { AppUpdateManager(applicationContext) }
     private val announcementManager by lazy { AppAnnouncementManager(applicationContext) }
@@ -116,12 +122,13 @@ class MainActivity : ComponentActivity() {
     private val locationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) {
-        // Location permission is optional and never changes call readiness.
+        refreshLocationPermissionStatus()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         permissionsReady.value = requiredPermissionsGranted()
+        refreshLocationPermissionStatus()
         setContent {
             val startupState = updateState.collectAsStateWithLifecycle().value
             val appMode = appContainer.appModeStore.mode.collectAsStateWithLifecycle().value
@@ -150,6 +157,8 @@ class MainActivity : ComponentActivity() {
                             viewModel = viewModel,
                             permissionsGranted = permissionsReady.value,
                             requestPermissions = requestCallPermissions,
+                            locationPermissionStatus = locationPermissionStatus.value,
+                            requestLocationPermission = ::requestLocationPermissionFromSettings,
                             telemetryAvailable = appContainer.usageTelemetry.isAvailable,
                             telemetryEnabled = telemetryEnabled,
                             onTelemetryEnabledChange = ::setTelemetryEnabled,
@@ -164,6 +173,8 @@ class MainActivity : ComponentActivity() {
                             viewModel = offlineViewModel,
                             permissionsGranted = permissionsReady.value,
                             requestPermissions = requestCallPermissions,
+                            locationPermissionStatus = locationPermissionStatus.value,
+                            requestLocationPermission = ::requestLocationPermissionFromSettings,
                             telemetryAvailable = appContainer.usageTelemetry.isAvailable,
                             telemetryEnabled = telemetryEnabled,
                             onTelemetryEnabledChange = ::setTelemetryEnabled,
@@ -218,6 +229,7 @@ class MainActivity : ComponentActivity() {
         backgroundLockJob?.cancel()
         backgroundLockJob = null
         permissionsReady.value = requiredPermissionsGranted()
+        refreshLocationPermissionStatus()
         if (applicationOperationsStarted) {
             viewModel.refreshSimConfiguration()
             offlineViewModel.refreshSimConfiguration()
@@ -546,13 +558,72 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestLocationPermissionIfNeeded() {
-        if (!applicationOperationsStarted || !appContainer.usageTelemetry.shouldRequestLocationPermission()) return
+        refreshLocationPermissionStatus()
+        val canRequestFromSystem = canRequestLocationPermissionFromSystem()
+        if (
+            !applicationOperationsStarted ||
+            !appContainer.usageTelemetry.shouldAutoRequestLocationPermission(canRequestFromSystem)
+        ) {
+            return
+        }
+        launchLocationPermissionRequest()
+    }
+
+    private fun requestLocationPermissionFromSettings() {
+        refreshLocationPermissionStatus()
+        if (locationPermissionStatus.value == LocationPermissionStatus.PRECISE) return
+        if (canRequestLocationPermissionFromSystem()) {
+            launchLocationPermissionRequest()
+        } else {
+            startActivity(
+                Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.fromParts("package", packageName, null),
+                ),
+            )
+        }
+    }
+
+    private fun launchLocationPermissionRequest() {
         appContainer.usageTelemetry.markLocationPermissionRequested()
         locationPermissionLauncher.launch(
             arrayOf(
                 Manifest.permission.ACCESS_FINE_LOCATION,
                 Manifest.permission.ACCESS_COARSE_LOCATION,
             ),
+        )
+    }
+
+    private fun refreshLocationPermissionStatus() {
+        val fineGranted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED
+        val coarseGranted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED
+        val canRequestFromSystem = canRequestLocationPermissionFromSystem()
+        locationPermissionStatus.value = when {
+            fineGranted -> LocationPermissionStatus.PRECISE
+            coarseGranted && canRequestFromSystem -> LocationPermissionStatus.APPROXIMATE
+            coarseGranted -> LocationPermissionStatus.APPROXIMATE_SETTINGS_REQUIRED
+            canRequestFromSystem -> LocationPermissionStatus.REQUESTABLE
+            else -> LocationPermissionStatus.SETTINGS_REQUIRED
+        }
+    }
+
+    private fun canRequestLocationPermissionFromSystem(): Boolean {
+        val shouldShowRationale = shouldShowRequestPermissionRationale(Manifest.permission.ACCESS_FINE_LOCATION) ||
+            shouldShowRequestPermissionRationale(Manifest.permission.ACCESS_COARSE_LOCATION)
+        val hasApproximateLocation = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED
+        return UsageTelemetryLocationPermissionPolicy.canRequestFromSystem(
+            promptCount = appContainer.usageTelemetry.locationPermissionPromptCount(),
+            shouldShowRationale = shouldShowRationale,
+            hasApproximateLocation = hasApproximateLocation,
         )
     }
 

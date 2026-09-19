@@ -140,6 +140,8 @@ npm run dev:web
 
 ### Android 正式签名档案（禁止更换）
 
+测试包和正式包一律使用下述正式证书。Debug 打包也需要注入正式签名凭据，并使用正式包名；缺少凭据或证书指纹不匹配时构建失败。交付用户的测试包统一使用 Release 构建和生产更新地址，发布后续版本时必须保证 versionCode 递增。不得使用默认 Debug keystore 或临时证书。
+
 所有能够覆盖已安装 APP 的 Release APK 必须使用同一份正式证书。下面的信息用于定位和比对，**不包含密码或私钥**：
 
 | 项目 | 正式值 |
@@ -238,7 +240,7 @@ ADMIN_PASSWORD='...' IMPORT_COUNT=100000 IMPORT_LOAD_TEST_CONFIRM=100000 ./scrip
 ## 发布前必做
 
 - 本地 `npm run lint && npm test && npm run build`。
-- Android `./gradlew test lintDebug assembleDebug`；Release 另需正式签名。
+- Android `./gradlew test lintDebug assembleDebug`；所有 APK 构建均需正式签名凭据，单元测试和 Lint 本身无需签名。
 - 独立模式需覆盖密码限流/自动锁、XLSX/XLS/CSV/粘贴导入、全局单 pending、重试上限迁移、临时文件清理、CallLog 迟到和 10/15/30 天清理。
 - 检查 Prisma migration、空数据库部署、管理员 bootstrap 和 `e2e-smoke.sh`。
 - 新 APK 必须使用同一个正式证书，更新 `release.json`、APK 文件名、SHA-256、`versionCode` 和 `versionName`，并按 [Android 更新服务指南](ANDROID_UPDATE_SERVER_GUIDE.md) 同步生产更新服务器与 GitHub Release。

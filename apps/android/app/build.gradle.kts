@@ -1,4 +1,6 @@
 import java.net.URI
+import java.security.KeyStore
+import java.security.MessageDigest
 
 plugins {
     id("com.android.application")
@@ -97,8 +99,8 @@ android {
         applicationId = "com.company.callcenter"
         minSdk = 26
         targetSdk = 35
-        versionCode = 20
-        versionName = "0.7.4"
+        versionCode = 21
+        versionName = "0.7.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -125,7 +127,7 @@ android {
 
     buildTypes {
         debug {
-            applicationIdSuffix = ".debug"
+            signingConfig = signingConfigs.getByName("release")
             versionNameSuffix = "-debug"
             buildConfigField(
                 "String",
@@ -157,6 +159,29 @@ android {
     composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
     packaging.resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
     sourceSets.getByName("androidTest").assets.srcDir("$projectDir/schemas")
+}
+
+val verifyOfficialSigning by tasks.registering {
+    doLast {
+        if (releaseSigningValues.values.any { it.isNullOrBlank() }) {
+            throw GradleException("All APK builds require the official CALL_CENTER_KEYSTORE_* and CALL_CENTER_KEY_* credentials; debug signing is forbidden")
+        }
+        val store = KeyStore.getInstance(file(releaseSigningValues.getValue("storeFile")!!),
+            releaseSigningValues.getValue("storePassword")!!.toCharArray())
+        val certificate = store.getCertificate(releaseSigningValues.getValue("keyAlias"))
+            ?: throw GradleException("Official signing certificate not found")
+        val fingerprint = MessageDigest.getInstance("SHA-256").digest(certificate.encoded)
+            .joinToString("") { "%02x".format(it) }
+        check(fingerprint == "1dc77e4ffdeba9e7bffa730826e4f7bb839884a92ccada8a75b88e2e0d45380d") {
+            "Signing certificate does not match the official certificate"
+        }
+    }
+}
+tasks.matching {
+    it.name.startsWith("validateSigning") ||
+        it.name.matches(Regex("(package|assemble|bundle|install)(Debug|Release)(AndroidTest)?"))
+}.configureEach {
+    dependsOn(verifyOfficialSigning)
 }
 
 dependencies {

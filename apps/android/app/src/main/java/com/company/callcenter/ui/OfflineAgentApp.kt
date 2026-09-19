@@ -97,6 +97,8 @@ fun OfflineAgentApp(
     viewModel: OfflineViewModel,
     permissionsGranted: Boolean,
     requestPermissions: () -> Unit,
+    locationPermissionStatus: LocationPermissionStatus,
+    requestLocationPermission: () -> Unit,
     telemetryAvailable: Boolean,
     telemetryEnabled: Boolean,
     onTelemetryEnabledChange: (Boolean) -> Unit,
@@ -118,6 +120,8 @@ fun OfflineAgentApp(
                 state = state,
                 permissionsGranted = permissionsGranted,
                 requestPermissions = requestPermissions,
+                locationPermissionStatus = locationPermissionStatus,
+                requestLocationPermission = requestLocationPermission,
                 telemetryAvailable = telemetryAvailable,
                 telemetryEnabled = telemetryEnabled,
                 onTelemetryEnabledChange = onTelemetryEnabledChange,
@@ -235,6 +239,8 @@ private fun OfflineMainScreen(
     state: OfflineUiState,
     permissionsGranted: Boolean,
     requestPermissions: () -> Unit,
+    locationPermissionStatus: LocationPermissionStatus,
+    requestLocationPermission: () -> Unit,
     telemetryAvailable: Boolean,
     telemetryEnabled: Boolean,
     onTelemetryEnabledChange: (Boolean) -> Unit,
@@ -390,6 +396,8 @@ private fun OfflineMainScreen(
                     state = state,
                     permissionsGranted = permissionsGranted,
                     requestPermissions = requestPermissions,
+                    locationPermissionStatus = locationPermissionStatus,
+                    requestLocationPermission = requestLocationPermission,
                     onSimModeChange = viewModel::setSimDialMode,
                     onMaximumAttemptsChange = viewModel::setMaximumAttempts,
                     onAutoDialDelayChange = viewModel::setAutoDialDelaySeconds,
@@ -848,6 +856,8 @@ private fun OfflineAccountScreen(
     state: OfflineUiState,
     permissionsGranted: Boolean,
     requestPermissions: () -> Unit,
+    locationPermissionStatus: LocationPermissionStatus,
+    requestLocationPermission: () -> Unit,
     onSimModeChange: (com.company.callcenter.telephony.SimDialMode) -> Unit,
     onMaximumAttemptsChange: (Int) -> Unit,
     onAutoDialDelayChange: (Int) -> Unit,
@@ -879,6 +889,9 @@ private fun OfflineAccountScreen(
         SettingsSection("外呼权限与设备") {
             if (permissionsGranted) Text("拨号与通话记录权限正常")
             else OutlinedButton(onClick = requestPermissions) { Text("重新授权外呼权限") }
+            if (telemetryAvailable) {
+                LocationPermissionSetting(locationPermissionStatus, requestLocationPermission)
+            }
         }
         SettingsSection("SIM 拨号") { SimDialSettings(state.simDial, onSimModeChange) }
         SettingsSection("自动拨号") {
