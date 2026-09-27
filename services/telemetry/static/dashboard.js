@@ -425,14 +425,44 @@ function createMapPopup(item) {
   appendPopupMetric(details, '总通话时长', duration(item.totalDurationSeconds));
   popup.append(title, details);
   if (item.members) {
-    const list = document.createElement('ul');
-    list.className = 'map-device-list';
-    item.members.forEach((device) => {
-      const entry = document.createElement('li');
-      entry.textContent = `${device.installation} · ${dateTime.format(new Date(device.capturedAt))} · 精度 ${Math.round(numeric(device.accuracyMeters))} 米 · 外呼 ${number.format(device.calls)}`;
-      list.append(entry);
-    });
-    popup.append(list);
+    if (item.members.length === 1) {
+      const device = item.members[0];
+      const timeInfo = document.createElement('p');
+      timeInfo.style.margin = '7px 0 0';
+      timeInfo.style.fontSize = '11px';
+      timeInfo.style.color = 'var(--muted)';
+      timeInfo.textContent = `首呼定位：${dateTime.format(new Date(device.capturedAt))} · 精度 ${Math.round(numeric(device.accuracyMeters))} 米`;
+      popup.append(timeInfo);
+      const trackBtn = document.createElement('button');
+      trackBtn.type = 'button';
+      trackBtn.className = 'track-action-btn';
+      trackBtn.textContent = '📍 查看此设备打卡轨迹';
+      trackBtn.addEventListener('click', () => {
+        if (distributionMap) distributionMap.closePopup();
+        showDeviceTrack(device.deviceKey || device.installation);
+      });
+      popup.append(trackBtn);
+    } else {
+      const list = document.createElement('ul');
+      list.className = 'map-device-list';
+      item.members.forEach((device) => {
+        const entry = document.createElement('li');
+        const info = document.createElement('div');
+        info.textContent = `${device.installation} · ${dateTime.format(new Date(device.capturedAt))} · 精度 ${Math.round(numeric(device.accuracyMeters))} 米 · 外呼 ${number.format(device.calls)}`;
+        const itemTrackBtn = document.createElement('button');
+        itemTrackBtn.type = 'button';
+        itemTrackBtn.className = 'track-action-btn';
+        itemTrackBtn.style.marginTop = '4px';
+        itemTrackBtn.textContent = `查看设备 ${device.installation} 轨迹`;
+        itemTrackBtn.addEventListener('click', () => {
+          if (distributionMap) distributionMap.closePopup();
+          showDeviceTrack(device.deviceKey || device.installation);
+        });
+        entry.append(info, itemTrackBtn);
+        list.append(entry);
+      });
+      popup.append(list);
+    }
   }
   return popup;
 }
@@ -494,11 +524,55 @@ function renderMap() {
     marker.addTo(distributionLayer).bindPopup(createMapPopup(item), { maxWidth: 360 });
   });
   const deviceCount = mapData.items.reduce((sum, item) => sum + numeric(item.devices), 0);
-  byId('map-summary').textContent = `已定位 ${number.format(deviceCount)} 台终端 · ${number.format(sourceItems.length)} 个地图点`;
+  const dateParams = getMapDateParams();
+  byId('map-summary').textContent = `已定位 ${number.format(deviceCount)} 台终端 · ${number.format(sourceItems.length)} 个地图点（${dateParams.label}）`;
   byId('map-status').textContent = mapData.truncated
     ? `当前区域设备过多，已显示前 ${number.format(mapData.items.length)} 台，请放大查看`
     : `缩放级别 ${mapData.zoom} · ${mapData.mode === 'clusters' ? '区域聚合' : '设备明细'}`;
 }
+
+function formatIsoDate(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function getMapDateParams() {
+  const mapRangeSelect = byId('map-range');
+  const mode = mapRangeSelect ? mapRangeSelect.value : '30';
+  const now = new Date();
+  const todayStr = formatIsoDate(now);
+
+  if (mode === 'today') {
+    return { startDate: todayStr, endDate: todayStr, label: '今天', mode };
+  }
+  if (mode === 'yesterday') {
+    const yesterday = new Date(now);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayStr = formatIsoDate(yesterday);
+    return { startDate: yesterdayStr, endDate: yesterdayStr, label: '昨天', mode };
+  }
+  if (mode === 'single') {
+    const singleInput = byId('map-single-date');
+    const val = singleInput && singleInput.value ? singleInput.value : todayStr;
+    return { startDate: val, endDate: val, label: val, mode };
+  }
+  if (mode === 'custom') {
+    const startInput = byId('map-start-date');
+    const endInput = byId('map-end-date');
+    const startVal = startInput && startInput.value ? startInput.value : todayStr;
+    const endVal = endInput && endInput.value ? endInput.value : todayStr;
+    return { startDate: startVal, endDate: endVal, label: `${startVal} 至 ${endVal}`, mode };
+  }
+  const days = Number(mode) || 30;
+  const start = new Date(now);
+  start.setDate(start.getDate() - (days - 1));
+  return { startDate: formatIsoDate(start), endDate: todayStr, label: `近 ${days} 天`, days, mode };
+}
+
+let activeTrackInstallation = null;
+let trackLayer = null;
 
 function normalizedMapBounds() {
   const bounds = distributionMap.getBounds();
@@ -517,13 +591,19 @@ function normalizedMapBounds() {
 
 async function loadMap() {
   if (!distributionMap) return;
+  if (activeTrackInstallation) {
+    showDeviceTrack(activeTrackInstallation);
+    return;
+  }
   if (mapRequestController) mapRequestController.abort();
   mapRequestController = typeof AbortController === 'function' ? new AbortController() : null;
   byId('map-error').hidden = true;
   byId('map-status').textContent = '正在读取当前地图范围';
   const bounds = normalizedMapBounds().map((value) => value.toFixed(6)).join(',');
+  const dateParams = getMapDateParams();
   const params = new URLSearchParams({
-    days: byId('range').value,
+    start_date: dateParams.startDate,
+    end_date: dateParams.endDate,
     zoom: String(distributionMap.getZoom()),
     bbox: bounds,
   });
@@ -547,6 +627,220 @@ async function loadMap() {
 function scheduleMapLoad() {
   clearTimeout(mapRequestTimer);
   mapRequestTimer = setTimeout(loadMap, 180);
+}
+
+async function showDeviceTrack(installation) {
+  activeTrackInstallation = installation;
+  byId('map-error').hidden = true;
+  byId('map-status').textContent = `正在读取设备 ${installation.slice(0, 10)} 轨迹...`;
+  const dateParams = getMapDateParams();
+  const params = new URLSearchParams({
+    installation,
+    start_date: dateParams.startDate,
+    end_date: dateParams.endDate,
+  });
+  const options = { credentials: 'same-origin', cache: 'no-store' };
+  try {
+    const response = await fetch(`/admin/api/device/track?${params}`, options);
+    if (response.status === 401) { location.href = '/login'; return; }
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const trackData = await response.json();
+    renderDeviceTrack(trackData);
+  } catch (error) {
+    byId('map-error').textContent = `轨迹加载失败：${error.message}`;
+    byId('map-error').hidden = false;
+    byId('map-status').textContent = '轨迹数据不可用';
+  }
+}
+
+function renderDeviceTrack(trackData) {
+  if (distributionMap && globalThis.L) {
+    if (distributionLayer) distributionLayer.clearLayers();
+    if (!trackLayer) {
+      trackLayer = globalThis.L.layerGroup().addTo(distributionMap);
+    } else {
+      trackLayer.clearLayers();
+    }
+  }
+
+  const trackPanel = byId('map-track-panel');
+  if (trackPanel) trackPanel.hidden = false;
+
+  const dateParams = getMapDateParams();
+  byId('track-title').textContent = `设备 ${trackData.installation} 轨迹`;
+  byId('track-range-text').textContent = `${trackData.startDate} 至 ${trackData.endDate} · ${dateParams.label}`;
+
+  const summaryEl = byId('track-summary');
+  if (summaryEl) {
+    const items = [
+      ['打卡天数', `${trackData.totalPoints} 天`],
+      ['期间外呼', number.format(trackData.metrics.calls)],
+      ['接通率', `${(numeric(trackData.metrics.connectionRate) * 100).toFixed(1)}%`],
+    ];
+    summaryEl.replaceChildren(...items.map(([label, val]) => {
+      const card = document.createElement('div');
+      card.className = 'track-summary-item';
+      const valEl = document.createElement('span');
+      valEl.className = 'track-summary-val';
+      valEl.textContent = val;
+      const lblEl = document.createElement('span');
+      lblEl.className = 'track-summary-lbl';
+      lblEl.textContent = label;
+      card.append(valEl, lblEl);
+      return card;
+    }));
+  }
+
+  const markers = [];
+  const timelineEl = byId('track-timeline');
+  if (timelineEl) {
+    if (trackData.points.length === 0) {
+      const emptyP = document.createElement('p');
+      emptyP.className = 'muted';
+      emptyP.style.textAlign = 'center';
+      emptyP.style.padding = '18px 0';
+      emptyP.textContent = '该设备在所选时间范围内无打卡记录';
+      timelineEl.replaceChildren(emptyP);
+    } else {
+      const itemNodes = trackData.points.map((pt, index) => {
+        const seq = index + 1;
+        const isLatest = index === trackData.points.length - 1;
+        const itemNode = document.createElement('div');
+        itemNode.className = 'track-timeline-item';
+        const row = document.createElement('div');
+        row.className = 'track-item-row';
+        const dayBox = document.createElement('div');
+        dayBox.className = 'track-item-day';
+        const dot = document.createElement('span');
+        dot.className = `track-dot-seq${isLatest ? ' is-latest' : ''}`;
+        dot.textContent = String(seq);
+        const dateEl = document.createElement('span');
+        dateEl.className = 'track-item-date';
+        dateEl.textContent = pt.date;
+        dayBox.append(dot, dateEl);
+
+        const timeEl = document.createElement('span');
+        timeEl.className = 'track-item-time';
+        timeEl.textContent = dateTime.format(new Date(pt.capturedAt)).split(' ')[1] || '';
+        row.append(dayBox, timeEl);
+
+        const metricsEl = document.createElement('div');
+        metricsEl.className = 'track-item-metrics';
+        metricsEl.textContent = `外呼 ${number.format(pt.calls)} · 接通率 ${(numeric(pt.connectionRate) * 100).toFixed(0)}% · 精度 ${Math.round(numeric(pt.accuracyMeters))}m`;
+
+        itemNode.append(row, metricsEl);
+
+        itemNode.addEventListener('click', () => {
+          timelineEl.querySelectorAll('.track-timeline-item').forEach(el => el.classList.remove('active'));
+          itemNode.classList.add('active');
+          if (distributionMap && markers[index]) {
+            distributionMap.setView(markers[index].getLatLng(), Math.max(distributionMap.getZoom(), 14));
+            markers[index].openPopup();
+          }
+        });
+
+        return itemNode;
+      });
+      timelineEl.replaceChildren(...itemNodes);
+    }
+  }
+
+  if (distributionMap && globalThis.L && trackLayer && trackData.points.length > 0) {
+    const latLngs = trackData.points.map((pt) => wgs84ToGcj02(Number(pt.latitude), Number(pt.longitude)));
+    if (latLngs.length > 1) {
+      globalThis.L.polyline(latLngs, {
+        color: '#087a55',
+        weight: 3.5,
+        opacity: 0.85,
+        dashArray: '6, 6',
+        lineJoin: 'round',
+      }).addTo(trackLayer);
+    }
+
+    trackData.points.forEach((pt, index) => {
+      const seq = index + 1;
+      const isLatest = index === trackData.points.length - 1;
+      const latLng = latLngs[index];
+      const marker = globalThis.L.marker(latLng, {
+        icon: globalThis.L.divIcon({
+          className: 'map-value-icon',
+          html: `<span class="map-track-marker${isLatest ? ' is-latest' : ''}">${seq}</span>`,
+          iconSize: [26, 26],
+          iconAnchor: [13, 13],
+        }),
+        title: `第 ${seq} 天 · ${pt.date}`,
+      }).addTo(trackLayer);
+      markers.push(marker);
+
+      const popup = document.createElement('div');
+      popup.className = 'map-popup';
+      const h4 = document.createElement('h4');
+      h4.textContent = `第 ${seq} 天 · ${pt.date}${isLatest ? '（最新打卡）' : ''}`;
+      const dl = document.createElement('dl');
+      appendPopupMetric(dl, '外呼量', number.format(pt.calls));
+      appendPopupMetric(dl, '接通 / 未接', `${number.format(pt.connected)} / ${number.format(pt.notConnected)}`);
+      appendPopupMetric(dl, '接通率', `${(numeric(pt.connectionRate) * 100).toFixed(1)}%`);
+      appendPopupMetric(dl, '通话时长', duration(pt.totalDurationSeconds));
+      appendPopupMetric(dl, '首呼定位', dateTime.format(new Date(pt.capturedAt)));
+      appendPopupMetric(dl, '定位精度', `${Math.round(numeric(pt.accuracyMeters))} 米`);
+      popup.append(h4, dl);
+      marker.bindPopup(popup, { maxWidth: 300 });
+    });
+
+    if (latLngs.length === 1) {
+      distributionMap.setView(latLngs[0], Math.max(distributionMap.getZoom(), 13));
+    } else {
+      distributionMap.fitBounds(latLngs, { padding: [50, 50], maxZoom: 15 });
+    }
+  }
+
+  if (trackData.points.length > 0) {
+    byId('map-status').textContent = `轨迹模式：设备 ${trackData.installation}（共 ${trackData.totalPoints} 个打卡点）`;
+  } else {
+    byId('map-status').textContent = `设备 ${trackData.installation} 在所选时段内无打卡记录`;
+  }
+}
+
+function exitDeviceTrack() {
+  activeTrackInstallation = null;
+  const trackPanel = byId('map-track-panel');
+  if (trackPanel) trackPanel.hidden = true;
+  if (trackLayer) trackLayer.clearLayers();
+  if (distributionMap) loadMap();
+}
+
+function onMapRangeChange() {
+  const val = byId('map-range').value;
+  const pickerWrap = byId('map-date-picker-wrap');
+  const singleBox = byId('map-single-date-box');
+  const customBox = byId('map-custom-date-box');
+  if (pickerWrap) {
+    if (val === 'single') {
+      pickerWrap.hidden = false;
+      singleBox.hidden = false;
+      customBox.hidden = true;
+      if (!byId('map-single-date').value) {
+        byId('map-single-date').value = formatIsoDate(new Date());
+      }
+    } else if (val === 'custom') {
+      pickerWrap.hidden = false;
+      singleBox.hidden = true;
+      customBox.hidden = false;
+      const now = new Date();
+      if (!byId('map-end-date').value) byId('map-end-date').value = formatIsoDate(now);
+      if (!byId('map-start-date').value) {
+        const past = new Date(now);
+        past.setDate(past.getDate() - 7);
+        byId('map-start-date').value = formatIsoDate(past);
+      }
+      return;
+    } else {
+      pickerWrap.hidden = true;
+      singleBox.hidden = true;
+      customBox.hidden = true;
+    }
+  }
+  scheduleMapLoad();
 }
 
 function initDistributionMap() {
@@ -965,13 +1259,16 @@ announcementEditForm.addEventListener('submit', async (event) => {
 
 byId('range').addEventListener('change', () => {
   load();
-  loadMap();
 });
 byId('refresh').addEventListener('click', () => {
   load();
   loadMap();
 });
 byId('map-metric').addEventListener('change', renderMap);
+if (byId('map-range')) byId('map-range').addEventListener('change', onMapRangeChange);
+if (byId('map-single-date')) byId('map-single-date').addEventListener('change', scheduleMapLoad);
+if (byId('map-date-apply')) byId('map-date-apply').addEventListener('click', scheduleMapLoad);
+if (byId('track-exit-btn')) byId('track-exit-btn').addEventListener('click', exitDeviceTrack);
 initDistributionMap();
 load();
 loadAnnouncements().catch((error) => {

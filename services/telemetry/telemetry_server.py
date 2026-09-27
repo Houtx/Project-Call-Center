@@ -30,6 +30,8 @@ from typing import Any
 MAX_BODY_BYTES = 32 * 1024
 SESSION_SECONDS = 12 * 60 * 60
 ALLOWED_RANGE_DAYS = {7, 30, 90, 365}
+ALLOWED_MAP_RANGE_DAYS = {1, 3, 7, 14, 30, 90, 180, 365}
+TRACK_INSTALLATION_PATTERN = re.compile(r"^[0-9a-fA-F]{10,64}$")
 IDENTIFIER_PATTERN = re.compile(r"^[0-9a-fA-F-]{16,64}$")
 VERSION_PATTERN = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,31}$")
 LOCALE_PATTERN = re.compile(r"^[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8}){0,2}$")
@@ -765,12 +767,24 @@ class TelemetryDatabase:
 
     def map_data(
         self,
-        days: int,
+        days_or_start: int | str,
         zoom: int,
         bounds: tuple[float, float, float, float],
+        end_date: str | None = None,
     ) -> dict[str, Any]:
         today = utc_now().date()
-        start = (today - dt.timedelta(days=days - 1)).isoformat()
+        if isinstance(days_or_start, int):
+            days = days_or_start
+            start = (today - dt.timedelta(days=days - 1)).isoformat()
+            end = today.isoformat()
+            range_days = days
+        else:
+            start = days_or_start
+            end = end_date or days_or_start
+            try:
+                range_days = max(1, (dt.date.fromisoformat(end) - dt.date.fromisoformat(start)).days + 1)
+            except ValueError:
+                range_days = 1
         west, south, east, north = bounds
         longitude_filter = (
             "ranked.longitude_e7 BETWEEN ? AND ?"
@@ -788,7 +802,7 @@ class TelemetryDatabase:
                                ORDER BY location_date DESC, captured_at DESC
                            ) AS position_rank
                     FROM installation_locations
-                    WHERE location_date >= ?
+                    WHERE location_date BETWEEN ? AND ?
                 ), calls AS (
                     SELECT install_hash,
                            SUM(call_count) AS calls,
@@ -797,10 +811,11 @@ class TelemetryDatabase:
                            SUM(unknown_count) AS unknown,
                            SUM(total_duration_seconds) AS duration
                     FROM daily_call_metrics
-                    WHERE metric_date >= ?
+                    WHERE metric_date BETWEEN ? AND ?
                     GROUP BY install_hash
                 )
                 SELECT substr(ranked.install_hash, 1, 10) AS installation,
+                       ranked.install_hash AS install_hash,
                        ranked.location_date, ranked.latitude_e7, ranked.longitude_e7,
                        ranked.accuracy_meters, ranked.captured_at,
                        COALESCE(calls.calls, 0) AS calls,
@@ -817,7 +832,9 @@ class TelemetryDatabase:
                 """,
                 (
                     start,
+                    end,
                     start,
+                    end,
                     round(south * 10_000_000),
                     round(north * 10_000_000),
                     round(west * 10_000_000),
@@ -834,6 +851,7 @@ class TelemetryDatabase:
                     "latitude": row["latitude_e7"] / 10_000_000,
                     "longitude": row["longitude_e7"] / 10_000_000,
                     "installation": row["installation"],
+                    "deviceKey": row["install_hash"],
                     "locationDate": row["location_date"],
                     "capturedAt": row["captured_at"],
                     "accuracyMeters": round(row["accuracy_meters"], 1),
@@ -883,11 +901,104 @@ class TelemetryDatabase:
             mode = "clusters"
         return {
             "generatedAt": iso_timestamp(),
-            "rangeDays": days,
+            "rangeDays": range_days,
+            "startDate": start,
+            "endDate": end,
             "zoom": zoom,
             "mode": mode,
             "truncated": truncated,
             "items": items,
+        }
+
+    def device_track(
+        self,
+        installation: str,
+        start_date: str,
+        end_date: str,
+    ) -> dict[str, Any]:
+        with self.connection() as db:
+            rows = db.execute(
+                """
+                SELECT
+                    loc.install_hash,
+                    loc.location_date,
+                    loc.latitude_e7,
+                    loc.longitude_e7,
+                    loc.accuracy_meters,
+                    loc.captured_at,
+                    COALESCE(c.calls, 0) AS calls,
+                    COALESCE(c.connected, 0) AS connected,
+                    COALESCE(c.not_connected, 0) AS not_connected,
+                    COALESCE(c.unknown, 0) AS unknown,
+                    COALESCE(c.duration, 0) AS duration
+                FROM installation_locations loc
+                LEFT JOIN (
+                    SELECT install_hash, metric_date,
+                           SUM(call_count) AS calls,
+                           SUM(connected_count) AS connected,
+                           SUM(not_connected_count) AS not_connected,
+                           SUM(unknown_count) AS unknown,
+                           SUM(total_duration_seconds) AS duration
+                    FROM daily_call_metrics
+                    GROUP BY install_hash, metric_date
+                ) c ON c.install_hash = loc.install_hash AND c.metric_date = loc.location_date
+                WHERE loc.install_hash LIKE ? || '%'
+                  AND loc.location_date BETWEEN ? AND ?
+                ORDER BY loc.location_date ASC, loc.captured_at ASC
+                """,
+                (installation, start_date, end_date),
+            ).fetchall()
+        points = []
+        total_calls = 0
+        total_connected = 0
+        total_not_connected = 0
+        total_unknown = 0
+        total_duration = 0
+        install_prefix = installation[:10]
+        for row in rows:
+            if not install_prefix and row["install_hash"]:
+                install_prefix = row["install_hash"][:10]
+            calls = int(row["calls"] or 0)
+            connected = int(row["connected"] or 0)
+            not_connected = int(row["not_connected"] or 0)
+            unknown = int(row["unknown"] or 0)
+            duration = int(row["duration"] or 0)
+            total_calls += calls
+            total_connected += connected
+            total_not_connected += not_connected
+            total_unknown += unknown
+            total_duration += duration
+            denom = connected + not_connected
+            points.append({
+                "date": row["location_date"],
+                "latitude": row["latitude_e7"] / 10_000_000,
+                "longitude": row["longitude_e7"] / 10_000_000,
+                "accuracyMeters": round(row["accuracy_meters"], 1),
+                "capturedAt": row["captured_at"],
+                "calls": calls,
+                "connected": connected,
+                "notConnected": not_connected,
+                "unknown": unknown,
+                "totalDurationSeconds": duration,
+                "connectionRate": round(connected / denom, 4) if denom > 0 else 0.0,
+                "averageDurationSeconds": round(duration / connected, 1) if connected > 0 else 0.0,
+            })
+        overall_denom = total_connected + total_not_connected
+        return {
+            "installation": install_prefix,
+            "startDate": start_date,
+            "endDate": end_date,
+            "totalPoints": len(points),
+            "metrics": {
+                "calls": total_calls,
+                "connected": total_connected,
+                "notConnected": total_not_connected,
+                "unknown": total_unknown,
+                "totalDurationSeconds": total_duration,
+                "connectionRate": round(total_connected / overall_denom, 4) if overall_denom > 0 else 0.0,
+                "averageDurationSeconds": round(total_duration / total_connected, 1) if total_connected > 0 else 0.0,
+            },
+            "points": points,
         }
 
     def dashboard(self, days: int) -> dict[str, Any]:
@@ -1189,15 +1300,40 @@ class TelemetryHandler(BaseHTTPRequestHandler):
                 return
             query = urllib.parse.parse_qs(path.query)
             try:
-                days = int(query.get("days", ["30"])[0])
+                start_date = query.get("start_date", [None])[0]
+                end_date = query.get("end_date", [None])[0]
+                days_param = query.get("days", [None])[0]
+                today = utc_now().date()
+                if start_date is not None or end_date is not None:
+                    if not start_date or not end_date:
+                        raise ValueError
+                    start_val = parse_date(start_date, "start_date")
+                    end_val = parse_date(end_date, "end_date")
+                    if start_val > end_val:
+                        raise ValueError
+                    if dt.date.fromisoformat(start_val) < today - dt.timedelta(days=400):
+                        raise ValueError
+                    if dt.date.fromisoformat(end_val) > today + dt.timedelta(days=1):
+                        raise ValueError
+                    map_arg: int | str = start_val
+                    map_end_arg: str | None = end_val
+                elif days_param is not None:
+                    days = int(days_param)
+                    if days not in ALLOWED_MAP_RANGE_DAYS:
+                        raise ValueError
+                    map_arg = days
+                    map_end_arg = None
+                else:
+                    map_arg = 30
+                    map_end_arg = None
+
                 zoom = int(query.get("zoom", [""])[0])
                 bounds_values = [float(value) for value in query.get("bbox", [""])[0].split(",")]
                 if len(bounds_values) != 4 or not all(math.isfinite(value) for value in bounds_values):
                     raise ValueError
                 west, south, east, north = bounds_values
                 if (
-                    days not in ALLOWED_RANGE_DAYS
-                    or not 0 <= zoom <= 20
+                    not 0 <= zoom <= 20
                     or not -180 <= west <= 180
                     or not -180 <= east <= 180
                     or not -85.051129 <= south < north <= 85.051129
@@ -1209,7 +1345,47 @@ class TelemetryHandler(BaseHTTPRequestHandler):
                 return
             self.json_response(
                 HTTPStatus.OK,
-                self.app.database.map_data(days, zoom, (west, south, east, north)),
+                self.app.database.map_data(map_arg, zoom, (west, south, east, north), map_end_arg),
+            )
+            return
+        if path.path == "/admin/api/device/track":
+            if self.require_session() is None:
+                return
+            query = urllib.parse.parse_qs(path.query)
+            try:
+                installation = query.get("installation", [""])[0].strip().lower()
+                if not TRACK_INSTALLATION_PATTERN.fullmatch(installation):
+                    raise ValueError
+                start_date = query.get("start_date", [None])[0]
+                end_date = query.get("end_date", [None])[0]
+                days_param = query.get("days", [None])[0]
+                today = utc_now().date()
+                if start_date is not None or end_date is not None:
+                    if not start_date or not end_date:
+                        raise ValueError
+                    start_val = parse_date(start_date, "start_date")
+                    end_val = parse_date(end_date, "end_date")
+                    if start_val > end_val:
+                        raise ValueError
+                    if dt.date.fromisoformat(start_val) < today - dt.timedelta(days=400):
+                        raise ValueError
+                    if dt.date.fromisoformat(end_val) > today + dt.timedelta(days=1):
+                        raise ValueError
+                elif days_param is not None:
+                    days = int(days_param)
+                    if days not in ALLOWED_MAP_RANGE_DAYS:
+                        raise ValueError
+                    start_val = (today - dt.timedelta(days=days - 1)).isoformat()
+                    end_val = today.isoformat()
+                else:
+                    start_val = (today - dt.timedelta(days=29)).isoformat()
+                    end_val = today.isoformat()
+            except (ValueError, TypeError):
+                self.json_response(HTTPStatus.BAD_REQUEST, {"message": "轨迹查询参数无效"})
+                return
+            self.json_response(
+                HTTPStatus.OK,
+                self.app.database.device_track(installation, start_val, end_val),
             )
             return
         if path.path == "/admin/api/announcements":

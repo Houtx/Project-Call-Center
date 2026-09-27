@@ -160,6 +160,31 @@ assert.equal(document.querySelectorAll('.announcement-actions button').length, 2
 assert.match(document.querySelector('#announcement-summary').textContent, /当前公告 #3/);
 assert.equal(document.querySelectorAll('#map-metric option').length, 7);
 assert.equal(document.querySelector('#map-metric').value, 'devices');
+assert.equal(document.querySelectorAll('#map-range option').length, 7);
+assert.equal(document.querySelector('#map-range').value, '30');
+assert.equal(document.querySelector('#map-date-picker-wrap').hidden, true);
+assert.equal(document.querySelector('#map-track-panel').hidden, true);
+
+// Test selecting single date mode
+const mapRange = document.querySelector('#map-range');
+mapRange.value = 'single';
+mapRange.dispatchEvent(new dom.window.Event('change'));
+assert.equal(document.querySelector('#map-date-picker-wrap').hidden, false);
+assert.equal(document.querySelector('#map-single-date-box').hidden, false);
+assert.equal(document.querySelector('#map-custom-date-box').hidden, true);
+
+// Test selecting custom range mode
+mapRange.value = 'custom';
+mapRange.dispatchEvent(new dom.window.Event('change'));
+assert.equal(document.querySelector('#map-date-picker-wrap').hidden, false);
+assert.equal(document.querySelector('#map-single-date-box').hidden, true);
+assert.equal(document.querySelector('#map-custom-date-box').hidden, false);
+
+// Test selecting today mode
+mapRange.value = 'today';
+mapRange.dispatchEvent(new dom.window.Event('change'));
+assert.equal(document.querySelector('#map-date-picker-wrap').hidden, true);
+
 assert.equal(document.querySelector('#map-error').hidden, false);
 assert.match(document.querySelector('#map-error').textContent, /地图组件加载失败/);
 
@@ -270,5 +295,64 @@ assert.deepEqual(fetchCalls.slice(0, 3).map((call) => call.url), [
   '/admin/api/announcements',
   '/release.json',
 ]);
+
+// Test Track panel rendering
+const sampleTrack = {
+  installation: 'a1b2c3d4e5',
+  startDate: '2026-08-14',
+  endDate: '2026-08-20',
+  totalPoints: 2,
+  metrics: {
+    calls: 25,
+    connected: 10,
+    notConnected: 12,
+    unknown: 3,
+    totalDurationSeconds: 400,
+    connectionRate: 10 / 22,
+    averageDurationSeconds: 40,
+  },
+  points: [
+    {
+      date: '2026-08-14',
+      latitude: 31.23,
+      longitude: 121.47,
+      accuracyMeters: 15,
+      capturedAt: '2026-08-14T09:00:00Z',
+      calls: 10,
+      connected: 4,
+      notConnected: 5,
+      unknown: 1,
+      totalDurationSeconds: 160,
+      connectionRate: 4 / 9,
+      averageDurationSeconds: 40,
+    },
+    {
+      date: '2026-08-20',
+      latitude: 31.24,
+      longitude: 121.48,
+      accuracyMeters: 20,
+      capturedAt: '2026-08-20T09:30:00Z',
+      calls: 15,
+      connected: 6,
+      notConnected: 7,
+      unknown: 2,
+      totalDurationSeconds: 240,
+      connectionRate: 6 / 13,
+      averageDurationSeconds: 40,
+    },
+  ],
+};
+
+dom.window.eval(`renderDeviceTrack(${JSON.stringify(sampleTrack)})`);
+assert.equal(document.querySelector('#map-track-panel').hidden, false);
+assert.match(document.querySelector('#track-title').textContent, /设备 a1b2c3d4e5/);
+assert.equal(document.querySelectorAll('#track-summary .track-summary-item').length, 3);
+assert.equal(document.querySelectorAll('#track-timeline .track-timeline-item').length, 2);
+assert.match(document.querySelector('#track-timeline').textContent, /2026-08-14/);
+assert.match(document.querySelector('#track-timeline').textContent, /2026-08-20/);
+
+// Test exiting track view
+document.querySelector('#track-exit-btn').click();
+assert.equal(document.querySelector('#map-track-panel').hidden, true);
 
 console.log('Dashboard DOM rendering passed');

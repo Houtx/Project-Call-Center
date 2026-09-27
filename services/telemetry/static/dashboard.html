@@ -87,28 +87,67 @@
       </div>
       <article class="dashboard-panel map-panel">
         <div class="map-toolbar">
-          <label for="map-metric">地图指标</label>
-          <select id="map-metric">
-            <option value="devices" selected>活跃终端数</option>
-            <option value="calls">外呼量</option>
-            <option value="connected">接通量</option>
-            <option value="notConnected">未接通量</option>
-            <option value="connectionRate">接通率</option>
-            <option value="totalDurationSeconds">总通话时长</option>
-            <option value="averageDurationSeconds">平均通话时长</option>
-          </select>
+          <div class="map-toolbar-group">
+            <label for="map-range">时间范围</label>
+            <select id="map-range" aria-label="地图时间范围">
+              <option value="today">今天 (实时)</option>
+              <option value="yesterday">昨天</option>
+              <option value="single">指定某一天</option>
+              <option value="7">近 7 天</option>
+              <option value="30" selected>近 30 天</option>
+              <option value="90">近 90 天</option>
+              <option value="custom">自定义区间</option>
+            </select>
+          </div>
+          <div id="map-date-picker-wrap" class="map-date-picker-wrap" hidden>
+            <div id="map-single-date-box" class="map-date-box" hidden>
+              <input type="date" id="map-single-date" class="map-date-input" aria-label="选择指定日期">
+            </div>
+            <div id="map-custom-date-box" class="map-date-box" hidden>
+              <input type="date" id="map-start-date" class="map-date-input" aria-label="起始日期">
+              <span class="map-date-sep">至</span>
+              <input type="date" id="map-end-date" class="map-date-input" aria-label="结束日期">
+              <button type="button" id="map-date-apply" class="map-apply-btn">应用</button>
+            </div>
+          </div>
+          <div class="map-toolbar-group">
+            <label for="map-metric">地图指标</label>
+            <select id="map-metric" aria-label="地图指标">
+              <option value="devices" selected>活跃终端数</option>
+              <option value="calls">外呼量</option>
+              <option value="connected">接通量</option>
+              <option value="notConnected">未接通量</option>
+              <option value="connectionRate">接通率</option>
+              <option value="totalDurationSeconds">总通话时长</option>
+              <option value="averageDurationSeconds">平均通话时长</option>
+            </select>
+          </div>
           <span id="map-status" class="map-status" aria-live="polite"></span>
         </div>
-        <div
-          id="distribution-map"
-          class="distribution-map"
-          role="region"
-          aria-label="设备地理分布地图"
-          data-tile-url="__MAP_TILE_URL__"
-          data-attribution="__MAP_ATTRIBUTION__"
-        ></div>
+        <div class="map-stage">
+          <div
+            id="distribution-map"
+            class="distribution-map"
+            role="region"
+            aria-label="设备地理分布地图"
+            data-tile-url="__MAP_TILE_URL__"
+            data-attribution="__MAP_ATTRIBUTION__"
+          ></div>
+          <div id="map-track-panel" class="map-track-panel" hidden>
+            <div class="track-panel-header">
+              <div class="track-panel-title-block">
+                <span class="track-badge">按日打卡轨迹</span>
+                <h4 id="track-title" class="track-title">设备轨迹</h4>
+                <span id="track-range-text" class="track-range-text"></span>
+              </div>
+              <button type="button" id="track-exit-btn" class="track-exit-btn" title="退出轨迹视图并返回设备分布">✕ 退出轨迹</button>
+            </div>
+            <div id="track-summary" class="track-summary-grid"></div>
+            <div id="track-timeline" class="track-timeline"></div>
+          </div>
+        </div>
         <p id="map-error" class="map-error" role="alert" hidden></p>
-        <p class="map-note">缩小地图查看区域聚合，放大至街区级别查看匿名设备点。圆点大小表示当前选择的指标。</p>
+        <p class="map-note">缩小地图查看区域聚合，放大至街区级别查看匿名设备点并支持查看按日作业轨迹。圆点大小表示当前选择的指标。</p>
       </article>
     </section>
 

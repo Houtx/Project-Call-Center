@@ -387,6 +387,42 @@ class TelemetryServerTest(unittest.TestCase):
                     "GET", "/admin/api/map?days=30&zoom=99&bbox=120,30,123,33", cookie=old_cookie
                 )[0])
 
+                # Map with custom date range
+                status, _, body = request(
+                    "GET",
+                    "/admin/api/map?start_date=2026-08-01&end_date=2026-08-20&zoom=8&bbox=120,30,123,33",
+                    cookie=old_cookie,
+                )
+                self.assertEqual(200, status)
+                self.assertEqual("2026-08-01", json.loads(body)["startDate"])
+                self.assertEqual("2026-08-20", json.loads(body)["endDate"])
+
+                # Invalid date range (start > end)
+                self.assertEqual(400, request(
+                    "GET",
+                    "/admin/api/map?start_date=2026-08-25&end_date=2026-08-20&zoom=8&bbox=120,30,123,33",
+                    cookie=old_cookie,
+                )[0])
+
+                # Device track endpoint
+                status, _, body = request(
+                    "GET",
+                    "/admin/api/device/track?installation=a1b2c3d4e5&start_date=2026-08-01&end_date=2026-08-20",
+                    cookie=old_cookie,
+                )
+                self.assertEqual(200, status)
+                track_resp = json.loads(body)
+                self.assertEqual("a1b2c3d4e5", track_resp["installation"])
+                self.assertEqual(0, track_resp["totalPoints"])
+                self.assertEqual(list, type(track_resp["points"]))
+
+                # Invalid device track installation
+                self.assertEqual(400, request(
+                    "GET",
+                    "/admin/api/device/track?installation=invalid-not-hex!&days=7",
+                    cookie=old_cookie,
+                )[0])
+
                 status, _, body = request(
                     "POST",
                     "/admin/api/announcements",
