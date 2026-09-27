@@ -136,7 +136,14 @@
           <div id="map-track-panel" class="map-track-panel" hidden>
             <div class="track-panel-header">
               <div class="track-panel-title-block">
-                <span class="track-badge">按日打卡轨迹</span>
+                <div class="track-badge-row">
+                  <span class="track-badge">按日打卡轨迹</span>
+                  <div id="track-range-pills" class="track-range-pills">
+                    <button type="button" class="track-pill" data-days="7">近7天</button>
+                    <button type="button" class="track-pill active" data-days="30">近30天</button>
+                    <button type="button" class="track-pill" data-days="90">近90天</button>
+                  </div>
+                </div>
                 <h4 id="track-title" class="track-title">设备轨迹</h4>
                 <span id="track-range-text" class="track-range-text"></span>
               </div>

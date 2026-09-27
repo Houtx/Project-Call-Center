@@ -572,7 +572,9 @@ function getMapDateParams() {
 }
 
 let activeTrackInstallation = null;
+let activeTrackDays = '30';
 let trackLayer = null;
+let isTrackLoading = false;
 
 function normalizedMapBounds() {
   const bounds = distributionMap.getBounds();
@@ -590,11 +592,7 @@ function normalizedMapBounds() {
 }
 
 async function loadMap() {
-  if (!distributionMap) return;
-  if (activeTrackInstallation) {
-    showDeviceTrack(activeTrackInstallation);
-    return;
-  }
+  if (!distributionMap || activeTrackInstallation) return;
   if (mapRequestController) mapRequestController.abort();
   mapRequestController = typeof AbortController === 'function' ? new AbortController() : null;
   byId('map-error').hidden = true;
@@ -629,15 +627,67 @@ function scheduleMapLoad() {
   mapRequestTimer = setTimeout(loadMap, 180);
 }
 
-async function showDeviceTrack(installation) {
+function calculateTrackDisplayCoordinates(points) {
+  const coordGroups = new Map();
+  points.forEach((pt, idx) => {
+    const key = `${Number(pt.latitude).toFixed(4)},${Number(pt.longitude).toFixed(4)}`;
+    if (!coordGroups.has(key)) coordGroups.set(key, []);
+    coordGroups.get(key).push(idx);
+  });
+
+  const displayCoords = new Array(points.length);
+  coordGroups.forEach((indices) => {
+    if (indices.length === 1) {
+      const idx = indices[0];
+      displayCoords[idx] = wgs84ToGcj02(Number(points[idx].latitude), Number(points[idx].longitude));
+    } else {
+      indices.forEach((idx, order) => {
+        const base = wgs84ToGcj02(Number(points[idx].latitude), Number(points[idx].longitude));
+        const angle = (2 * Math.PI * order) / indices.length;
+        const radius = 0.00018;
+        const offsetLat = base[0] + radius * Math.cos(angle);
+        const offsetLng = base[1] + (radius / Math.cos(base[0] * Math.PI / 180)) * Math.sin(angle);
+        displayCoords[idx] = [offsetLat, offsetLng];
+      });
+    }
+  });
+  return displayCoords;
+}
+
+async function showDeviceTrack(installation, overrideDays = null) {
+  if (isTrackLoading) return;
   activeTrackInstallation = installation;
+  if (overrideDays) {
+    activeTrackDays = String(overrideDays);
+  } else {
+    const currentMode = byId('map-range') ? byId('map-range').value : '30';
+    if (currentMode === '7' || currentMode === '30' || currentMode === '90') {
+      activeTrackDays = currentMode;
+    } else {
+      activeTrackDays = '30';
+    }
+  }
+
+  const pills = document.querySelectorAll('#track-range-pills .track-pill');
+  pills.forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.days === activeTrackDays);
+  });
+
+  isTrackLoading = true;
   byId('map-error').hidden = true;
   byId('map-status').textContent = `正在读取设备 ${installation.slice(0, 10)} 轨迹...`;
-  const dateParams = getMapDateParams();
+
+  const now = new Date();
+  const todayStr = formatIsoDate(now);
+  const daysNum = Number(activeTrackDays) || 30;
+  const start = new Date(now);
+  start.setDate(start.getDate() - (daysNum - 1));
+  const startDateStr = formatIsoDate(start);
+
   const params = new URLSearchParams({
     installation,
-    start_date: dateParams.startDate,
-    end_date: dateParams.endDate,
+    start_date: startDateStr,
+    end_date: todayStr,
   });
   const options = { credentials: 'same-origin', cache: 'no-store' };
   try {
@@ -650,6 +700,8 @@ async function showDeviceTrack(installation) {
     byId('map-error').textContent = `轨迹加载失败：${error.message}`;
     byId('map-error').hidden = false;
     byId('map-status').textContent = '轨迹数据不可用';
+  } finally {
+    isTrackLoading = false;
   }
 }
 
@@ -666,9 +718,8 @@ function renderDeviceTrack(trackData) {
   const trackPanel = byId('map-track-panel');
   if (trackPanel) trackPanel.hidden = false;
 
-  const dateParams = getMapDateParams();
   byId('track-title').textContent = `设备 ${trackData.installation} 轨迹`;
-  byId('track-range-text').textContent = `${trackData.startDate} 至 ${trackData.endDate} · ${dateParams.label}`;
+  byId('track-range-text').textContent = `${trackData.startDate} 至 ${trackData.endDate} · 近 ${activeTrackDays} 天`;
 
   const summaryEl = byId('track-summary');
   if (summaryEl) {
@@ -746,9 +797,10 @@ function renderDeviceTrack(trackData) {
   }
 
   if (distributionMap && globalThis.L && trackLayer && trackData.points.length > 0) {
-    const latLngs = trackData.points.map((pt) => wgs84ToGcj02(Number(pt.latitude), Number(pt.longitude)));
-    if (latLngs.length > 1) {
-      globalThis.L.polyline(latLngs, {
+    const displayCoords = calculateTrackDisplayCoordinates(trackData.points);
+
+    if (displayCoords.length > 1) {
+      globalThis.L.polyline(displayCoords, {
         color: '#087a55',
         weight: 3.5,
         opacity: 0.85,
@@ -760,7 +812,7 @@ function renderDeviceTrack(trackData) {
     trackData.points.forEach((pt, index) => {
       const seq = index + 1;
       const isLatest = index === trackData.points.length - 1;
-      const latLng = latLngs[index];
+      const latLng = displayCoords[index];
       const marker = globalThis.L.marker(latLng, {
         icon: globalThis.L.divIcon({
           className: 'map-value-icon',
@@ -787,10 +839,10 @@ function renderDeviceTrack(trackData) {
       marker.bindPopup(popup, { maxWidth: 300 });
     });
 
-    if (latLngs.length === 1) {
-      distributionMap.setView(latLngs[0], Math.max(distributionMap.getZoom(), 13));
+    if (displayCoords.length === 1) {
+      distributionMap.setView(displayCoords[0], Math.max(distributionMap.getZoom(), 13));
     } else {
-      distributionMap.fitBounds(latLngs, { padding: [50, 50], maxZoom: 15 });
+      distributionMap.fitBounds(displayCoords, { padding: [50, 50], maxZoom: 15 });
     }
   }
 
@@ -807,6 +859,21 @@ function exitDeviceTrack() {
   if (trackPanel) trackPanel.hidden = true;
   if (trackLayer) trackLayer.clearLayers();
   if (distributionMap) loadMap();
+}
+
+function initTrackPanelEvents() {
+  const pills = document.querySelectorAll('#track-range-pills .track-pill');
+  pills.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (!activeTrackInstallation) return;
+      showDeviceTrack(activeTrackInstallation, btn.dataset.days);
+    });
+  });
+  const trackPanel = byId('map-track-panel');
+  if (trackPanel && globalThis.L && globalThis.L.DomEvent) {
+    globalThis.L.DomEvent.disableClickPropagation(trackPanel);
+    globalThis.L.DomEvent.disableScrollPropagation(trackPanel);
+  }
 }
 
 function onMapRangeChange() {
@@ -1269,6 +1336,7 @@ if (byId('map-range')) byId('map-range').addEventListener('change', onMapRangeCh
 if (byId('map-single-date')) byId('map-single-date').addEventListener('change', scheduleMapLoad);
 if (byId('map-date-apply')) byId('map-date-apply').addEventListener('click', scheduleMapLoad);
 if (byId('track-exit-btn')) byId('track-exit-btn').addEventListener('click', exitDeviceTrack);
+initTrackPanelEvents();
 initDistributionMap();
 load();
 loadAnnouncements().catch((error) => {

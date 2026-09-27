@@ -346,6 +346,7 @@ const sampleTrack = {
 dom.window.eval(`renderDeviceTrack(${JSON.stringify(sampleTrack)})`);
 assert.equal(document.querySelector('#map-track-panel').hidden, false);
 assert.match(document.querySelector('#track-title').textContent, /设备 a1b2c3d4e5/);
+assert.equal(document.querySelectorAll('#track-range-pills .track-pill').length, 3);
 assert.equal(document.querySelectorAll('#track-summary .track-summary-item').length, 3);
 assert.equal(document.querySelectorAll('#track-timeline .track-timeline-item').length, 2);
 assert.match(document.querySelector('#track-timeline').textContent, /2026-08-14/);
