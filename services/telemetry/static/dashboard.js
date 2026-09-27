@@ -677,6 +677,16 @@ async function showDeviceTrack(installation, overrideDays = null) {
   byId('map-error').hidden = true;
   byId('map-status').textContent = `正在读取设备 ${installation.slice(0, 10)} 轨迹...`;
 
+  const trackPanel = byId('map-track-panel');
+  if (trackPanel) {
+    trackPanel.hidden = false;
+    trackPanel.style.display = 'flex';
+  }
+  const timelineEl = byId('track-timeline');
+  if (timelineEl) timelineEl.replaceChildren();
+  const summaryEl = byId('track-summary');
+  if (summaryEl) summaryEl.replaceChildren();
+
   const now = new Date();
   const todayStr = formatIsoDate(now);
   const daysNum = Number(activeTrackDays) || 30;
@@ -716,7 +726,10 @@ function renderDeviceTrack(trackData) {
   }
 
   const trackPanel = byId('map-track-panel');
-  if (trackPanel) trackPanel.hidden = false;
+  if (trackPanel) {
+    trackPanel.hidden = false;
+    trackPanel.style.display = 'flex';
+  }
 
   byId('track-title').textContent = `设备 ${trackData.installation} 轨迹`;
   byId('track-range-text').textContent = `${trackData.startDate} 至 ${trackData.endDate} · 近 ${activeTrackDays} 天`;
@@ -856,9 +869,23 @@ function renderDeviceTrack(trackData) {
 function exitDeviceTrack() {
   activeTrackInstallation = null;
   const trackPanel = byId('map-track-panel');
-  if (trackPanel) trackPanel.hidden = true;
+  if (trackPanel) {
+    trackPanel.hidden = true;
+    trackPanel.style.display = 'none';
+  }
+  const timelineEl = byId('track-timeline');
+  if (timelineEl) timelineEl.replaceChildren();
+  const summaryEl = byId('track-summary');
+  if (summaryEl) summaryEl.replaceChildren();
+  const titleEl = byId('track-title');
+  if (titleEl) titleEl.textContent = '设备轨迹';
+  const rangeEl = byId('track-range-text');
+  if (rangeEl) rangeEl.textContent = '';
   if (trackLayer) trackLayer.clearLayers();
-  if (distributionMap) loadMap();
+  if (distributionMap) {
+    distributionMap.closePopup();
+    loadMap();
+  }
 }
 
 function initTrackPanelEvents() {

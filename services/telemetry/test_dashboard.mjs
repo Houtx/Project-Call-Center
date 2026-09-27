@@ -355,5 +355,7 @@ assert.match(document.querySelector('#track-timeline').textContent, /2026-08-20/
 // Test exiting track view
 document.querySelector('#track-exit-btn').click();
 assert.equal(document.querySelector('#map-track-panel').hidden, true);
+assert.equal(document.querySelectorAll('#track-timeline .track-timeline-item').length, 0);
+assert.equal(document.querySelectorAll('#track-summary .track-summary-item').length, 0);
 
 console.log('Dashboard DOM rendering passed');
